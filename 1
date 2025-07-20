@@ -1,3 +1,56 @@
+@Override
+@UseOpenShiftClient
+public Map<String, PodDTO> getPodsOfDeployment(String cluster, String namespace, String deploymentName) {
+    OpenShiftClient client = openShiftService.getActiveClient();
+    if (client == null) {
+        throw new RuntimeException("OpenShift client is not initialized.");
+    }
+
+    Map<String, PodDTO> podDetailsMap = new HashMap<>();
+
+    List<Pod> pods = client.pods().inNamespace(namespace).withLabel("app", deploymentName).list().getItems();
+
+    for (Pod pod : pods) {
+        String podName = pod.getMetadata().getName();
+
+        PodDTO podDTO = new PodDTO();
+        podDTO.setPodName(podName);
+        podDTO.setPodIP(pod.getStatus().getPodIP());
+        podDTO.setHostIP(pod.getStatus().getHostIP());
+        podDTO.setNodeName(pod.getSpec().getNodeName());
+        podDTO.setPodPhase(pod.getStatus().getPhase());
+
+        if (pod.getStatus().getStartTime() != null) {
+            podDTO.setStartTime(pod.getStatus().getStartTime());
+        }
+
+        List<ContainerStatus> containerStatuses = pod.getStatus().getContainerStatuses();
+        List<ContainerDTO> containerDTOs = new ArrayList<>();
+
+        for (
+        ContainerStatus status : containerStatuses) {
+            ContainerDTO containerDTO = new ContainerDTO();
+            containerDTO.setContainerId(status.getContainerID());
+            containerDTO.setReady(status.getReady());
+            containerDTO.setRestartCount(status.getRestartCount());
+            containerDTO.setStarted(status.getStarted());
+            containerDTO.setState(status.getState().getRunning() != null ? "Running" : "Terminated");
+
+            if (status.getState().getRunning() != null) {
+                containerDTO.setStartedAt(status.getState().getRunning().getStartedAt());
+            }
+
+            containerDTOs.add(containerDTO);
+        }
+
+        podDTO.setContainers(containerDTOs);
+        podDetailsMap.put(podName, podDTO);
+    }
+
+    return podDetailsMap;
+}
+
+
 package com.barclays.iportalmonitoring.service.impl;
 
 import com.barclays.iportalmonitoring.annotation.ClusterIdentifier;
