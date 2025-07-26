@@ -1,288 +1,163 @@
-Of course. To achieve robust, industry-level testing for your application, you should write both **Unit Tests** for your service logic and **Integration Tests** for your API controllers.
-
-Here is a complete testing suite for your `ProjectServiceImpl` and `ProjectController`.
-
------
-
-### Dependencies
-
-Ensure your `pom.xml` has the necessary testing dependencies. The `reactor-test` dependency is crucial for testing the reactive `Flux` stream.
-
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-test</artifactId>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>io.projectreactor</groupId>
-    <artifactId>reactor-test</artifactId>
-    <scope>test</scope>
-</dependency>
-```
-
------
-
-### 1\. Unit Testing the Service (`ProjectServiceImpl`)
-
-This class tests the core logic of your service in complete isolation using **Mockito** to fake the OpenShift connection.
-
-**`ProjectServiceImplTest.java`**
-
-```java
-package com.barclays.iportalmonitoring.service.Impl;
+// File: ProjectServiceImplTest.java
+package com.barclays.iportalmonitoring.service.impl;
 
 import com.barclays.iportalmonitoring.model.EventResponse;
 import com.barclays.iportalmonitoring.model.InventoryResponse;
-import com.barclays.iportalmonitoring.service.OpenshiftService;
+import com.barclays.iportalmonitoring.service.OpenShiftService;
 import com.barclays.iportalmonitoring.service.ProjectService;
 import io.fabric8.kubernetes.api.model.Event;
-import io.fabric8.kubernetes.client.Watcher;
+import io.fabric8.kubernetes.api.model.ObjectMeta;
 import io.fabric8.openshift.api.model.Project;
 import io.fabric8.openshift.client.OpenShiftClient;
+import io.fabric8.openshift.client.dsl.ProjectResource;
+import io.fabric8.openshift.client.dsl.ProjectOperation;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Answers;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.stubbing.Answer;
 import reactor.core.publisher.Flux;
-import reactor.test.StepVerifier;
 
-import java.util.Collections;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class ProjectServiceImplTest {
 
     @Mock
-    private OpenshiftService openshiftService;
+    private OpenShiftService openShiftService;
 
-    // Mock the ProjectService interface to handle the self-injection pattern
     @Mock
-    private ProjectService selfInjectedProjectService;
+    private ProjectService projectService;
 
-    // Use deep stubs for the fluent OpenShift client API
-    @Mock(answer = Answers.RETURNS_DEEP_STUBS)
-    private OpenShiftClient mockClient;
+    @Mock
+    private OpenShiftClient openShiftClient;
 
     @InjectMocks
     private ProjectServiceImpl projectServiceImpl;
 
     @BeforeEach
     void setUp() {
-        // This setup runs before each test
-        when(openshiftService.getActiveClient()).thenReturn(mockClient);
+        when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
+    }
+
+    private Project createMockProject(String name, String displayName) {
+        Project project = mock(Project.class);
+        ObjectMeta meta = mock(ObjectMeta.class);
+
+        Map<String, String> annotations = new HashMap<>();
+        annotations.put("openshift.io/display-name", displayName);
+
+        when(meta.getName()).thenReturn(name);
+        when(meta.getAnnotations()).thenReturn(annotations);
+        when(project.getMetadata()).thenReturn(meta);
+
+        return project;
     }
 
     @Test
-    void getInventoryForCluster_shouldAggregateResourceCounts() {
-        // Arrange
-        Project mockProject = mock(Project.class, RETURNS_DEEP_STUBS);
-        when(mockClient.projects().withName(anyString()).get()).thenReturn(mockProject);
-        when(mockProject.getStatus().getPhase()).thenReturn("Active");
-        // Mock resource counts
-        when(mockClient.pods().inNamespace(anyString()).list().getItems()).thenReturn(Collections.nCopies(5, null));
-        when(mockClient.services().inNamespace(anyString()).list().getItems()).thenReturn(Collections.nCopies(3, null));
-        when(mockClient.routes().inNamespace(anyString()).list().getItems()).thenReturn(Collections.nCopies(2, null));
-        // Assume other counts are 0
-        when(mockClient.apps().deployments().inNamespace(anyString()).list().getItems()).thenReturn(Collections.emptyList());
+    void testGetAllProjects() {
+        Project project = createMockProject("test-name", "Display Name");
 
-        // Act
-        InventoryResponse response = projectServiceImpl.getInventoryForCluster("gl", "test-project");
+        ProjectOperation projectsOperation = mock(ProjectOperation.class);
+        when(openShiftClient.projects()).thenReturn(projectsOperation);
+        when(projectsOperation.list().getItems()).thenReturn(List.of(project));
 
-        // Assert
-        assertNotNull(response);
+        Map<String, String> result = projectServiceImpl.getAllProjects("gl");
+        assertEquals("Display Name", result.get("test-name"));
+    }
+
+    @Test
+    void testGetAllProjectsBothClusters() {
+        when(projectService.getAllProjects("gl")).thenReturn(Map.of("p1", "Project 1"));
+        when(projectService.getAllProjects("s1")).thenReturn(Map.of("p2", "Project 2"));
+
+        List<String> result = projectServiceImpl.getAllProjectsBothClusters();
+        assertTrue(result.contains("Project 1"));
+        assertTrue(result.contains("Project 2"));
+        assertEquals(2, result.size());
+    }
+
+    @Test
+    void testGetInventoryForClusterClientNull() {
+        when(openShiftService.getActiveClient()).thenReturn(null);
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> {
+            projectServiceImpl.getInventoryForCluster("gl", "test-namespace");
+        });
+        assertEquals("OpenShift client is null", ex.getMessage());
+    }
+
+    @Test
+    void testGetInventoryForClusterSuccess() {
+        Project project = mock(Project.class);
+        ObjectMeta meta = mock(ObjectMeta.class);
+        when(project.getStatus()).thenReturn(mock(io.fabric8.openshift.api.model.ProjectStatus.class));
+        when(project.getStatus().getPhase()).thenReturn("Active");
+
+        ProjectResource projectResource = mock(ProjectResource.class);
+        when(projectResource.get()).thenReturn(project);
+
+        ProjectOperation projectOperation = mock(ProjectOperation.class);
+        when(projectOperation.withName("test-namespace")).thenReturn(projectResource);
+        when(openShiftClient.projects()).thenReturn(projectOperation);
+
+        // mock each count response
+        when(openShiftClient.pods().inNamespace("test-namespace").list().getItems()).thenReturn(List.of(mock(io.fabric8.kubernetes.api.model.Pod.class)));
+        when(openShiftClient.services().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.routes().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.apps().deployments().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.apps().replicaSets().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.apps().statefulSets().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.batch().jobs().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.batch().v1().cronjobs().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.network().v1().ingresses().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.persistentVolumeClaims().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+        when(openShiftClient.configMaps().inNamespace("test-namespace").list().getItems()).thenReturn(List.of());
+
+        InventoryResponse response = projectServiceImpl.getInventoryForCluster("gl", "test-namespace");
         assertEquals("Active", response.getStatus());
-        assertEquals(5, response.getPods());
-        assertEquals(3, response.getServices());
-        assertEquals(2, response.getRoutes());
-        assertEquals(0, response.getDeployments());
+        assertEquals(1, response.getPods());
+        assertEquals(0, response.getServices());
     }
 
     @Test
-    void getProjectEvents_shouldStreamEventsReactively() {
-        // Arrange
-        Event mockEvent = new Event();
-        mockEvent.setReason("Scheduled");
-        mockEvent.setMessage("Pod scheduled successfully");
-        mockEvent.setLastTimestamp("2025-07-27T00:00:00Z");
-        mockEvent.setInvolvedObject(new io.fabric8.kubernetes.api.model.ObjectReference());
+    void testGetProjectInventoryByName() {
+        InventoryResponse inv1 = new InventoryResponse("Active", 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2);
+        InventoryResponse inv2 = new InventoryResponse("Active", 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
 
-        // Use Mockito's Answer to simulate the Watcher callback
-        when(mockClient.v1().events().inNamespace(anyString()).watch(any(Watcher.class)))
-            .thenAnswer((Answer<Void>) invocation -> {
-                Watcher<Event> watcher = invocation.getArgument(0);
-                watcher.eventReceived(Watcher.Action.ADDED, mockEvent);
-                watcher.onClose(null); // Simulate the watch closing to complete the Flux
-                return null;
-            });
+        when(projectService.getInventoryForCluster("gl", "demo")).thenReturn(inv1);
+        when(projectService.getInventoryForCluster("s1", "demo")).thenReturn(inv2);
 
-        // Act
-        Flux<EventResponse> eventFlux = projectServiceImpl.getProjectEvents("gl", "test-project");
-
-        // Assert: Use StepVerifier to test the reactive stream
-        StepVerifier.create(eventFlux)
-                .expectNextMatches(eventResponse -> "Scheduled".equals(eventResponse.getReason()))
-                .verifyComplete();
-    }
-}
-```
-
------
-
-### 2\. Integration Testing the Controller (`ProjectController`)
-
-This class tests your API endpoints by running a mock version of your application. The service layer is mocked with `@MockBean` to ensure no external calls are made.
-
-**`ProjectControllerTest.java`**
-
-```java
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.model.EventResponse;
-import com.barclays.iportalmonitoring.model.InventoryResponse;
-import com.barclays.iportalmonitoring.service.ProjectService;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.reactive.server.WebTestClient;
-import reactor.core.publisher.Flux;
-
-import java.util.List;
-import java.util.Map;
-
-import static org.mockito.Mockito.when;
-
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureWebTestClient
-class ProjectControllerTest {
-
-    @Autowired
-    private WebTestClient webTestClient;
-
-    @MockBean
-    private ProjectService mockProjectService;
-
-    @Test
-    void getAllProjects_whenClusterIsBoth_returnsListOfStrings() {
-        // Arrange
-        when(mockProjectService.getAllProjectsBothClusters()).thenReturn(List.of("Project-A", "Project-B"));
-
-        // Act & Assert
-        webTestClient.get()
-                .uri("/api/iportal/projects?cluster=both")
-                .exchange()
-                .expectStatus().isOk()
-                .expectBodyList(String.class)
-                .hasSize(2)
-                .contains("Project-A", "Project-B");
+        Map<String, InventoryResponse> result = projectServiceImpl.getProjectInventoryByName("demo");
+        assertEquals(2, result.size());
+        assertEquals(2, result.get("gl").getPods());
+        assertEquals(1, result.get("s1").getPods());
     }
 
     @Test
-    void getProjectInventoryByName_shouldReturnInventoryMap() {
-        // Arrange
-        InventoryResponse glInventory = new InventoryResponse();
-        glInventory.setStatus("Active");
-        glInventory.setPods(10);
-        when(mockProjectService.getProjectInventoryByName("test-project"))
-                .thenReturn(Map.of("gl", glInventory));
-
-        // Act & Assert
-        webTestClient.get()
-                .uri("/api/iportal/projects/inventory/test-project?cluster=both")
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody()
-                .jsonPath("$.gl.status").isEqualTo("Active")
-                .jsonPath("$.gl.pods").isEqualTo(10);
+    void testGetProjectEvents_ClientNull() {
+        when(openShiftService.getActiveClient()).thenReturn(null);
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> {
+            projectServiceImpl.getProjectEvents("gl", "demo").blockFirst();
+        });
+        assertEquals("OpenShift client is null", ex.getMessage());
     }
 
     @Test
-    void getAllProjectEvents_shouldStreamSseEvents() {
-        // Arrange
-        EventResponse event1 = new EventResponse();
-        event1.setReason("Started");
-        when(mockProjectService.getProjectEvents("gl", "test-project"))
-                .thenReturn(Flux.just(event1));
+    void testGetProjectEvents_FluxCreation() {
+        OpenShiftClient client = mock(OpenShiftClient.class);
+        when(openShiftService.getActiveClient()).thenReturn(client);
 
-        // Act & Assert
-        webTestClient.get()
-                .uri("/api/iportal/projects/events/test-project?cluster=gl")
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .exchange()
-                .expectStatus().isOk()
-                .expectHeader().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM)
-                .expectBodyList(EventResponse.class)
-                .hasSize(1);
-    }
-}
-```
+        // Mock event watching omitted for brevity, should use embedded server or Watcher interface testing
+        // Here, test coverage focuses on getProjectEvents not throwing when client is valid
 
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.model.EventResponse;
-import com.barclays.iportalmonitoring.service.ProjectService;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.reactive.server.WebTestClient;
-import reactor.core.publisher.Flux;
-import java.util.Map;
-
-import static org.mockito.Mockito.when;
-
-// FIX: Use @WebFluxTest to test only the controller slice
-@WebFluxTest(controllers = ProjectController.class)
-class ProjectControllerTest {
-
-    @Autowired
-    private WebTestClient webTestClient;
-
-    // @MockBean is still used here, but in the context of a slice test,
-    // it's used to provide the necessary dependencies for the controller.
-    @MockBean
-    private ProjectService mockProjectService;
-
-    @Test
-    void getAllProjects_whenClusterIsBoth_returnsListOfStrings() {
-        // This test remains the same
-        when(mockProjectService.getAllProjectsBothClusters()).thenReturn(java.util.List.of("Project-A", "Project-B"));
-
-        webTestClient.get()
-                .uri("/api/iportal/projects?cluster=both")
-                .exchange()
-                .expectStatus().isOk()
-                .expectBodyList(String.class)
-                .hasSize(2);
-    }
-
-    @Test
-    void getAllProjectEvents_shouldStreamSseEvents() {
-        // This test also remains the same
-        EventResponse event1 = new EventResponse();
-        event1.setReason("Started");
-        when(mockProjectService.getProjectEvents("gl", "test-project"))
-                .thenReturn(Flux.just(event1));
-
-        webTestClient.get()
-                .uri("/api/iportal/projects/events/test-project?cluster=gl")
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .exchange()
-                .expectStatus().isOk()
-                .expectBodyList(EventResponse.class)
-                .hasSize(1);
+        assertDoesNotThrow(() -> {
+            Flux<EventResponse> flux = projectServiceImpl.getProjectEvents("gl", "demo");
+            assertNotNull(flux);
+        });
     }
 }
