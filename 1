@@ -1,233 +1,185 @@
-Of course. Here is a complete JUnit 5 unit test for the `ConfigMapServiceImpl` class using Mockito and AssertJ for clear, fluent assertions.
+Here's a complete **unit test** for the `ConfigMapServiceImpl` class you described.
+This test uses **JUnit 5** and **Mockito** to mock the `OpenShiftService` and simulate different ConfigMap scenarios across clusters `gl` and `sl`.
 
-This test class effectively isolates the `ConfigMapServiceImpl` and verifies all logical paths within the `compareConfigMaps` method by mocking its dependencies and its self-invoked, AOP-proxied method.
+---
 
-### `pom.xml` Dependencies
+### ✅ Prerequisites
 
-To run this test, you'll need the following dependencies in your `pom.xml`:
+Add these dependencies in your `pom.xml` (if not already):
 
 ```xml
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-test</artifactId>
-        <scope>test</scope>
-    </dependency>
-
-    <dependency>
-        <groupId>io.fabric8</groupId>
-        <artifactId>kubernetes-client</artifactId>
-        <version>6.10.0</version> </dependency>
-</dependencies>
+<dependency>
+    <groupId>org.mockito</groupId>
+    <artifactId>mockito-core</artifactId>
+    <version>5.11.0</version>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.junit.jupiter</groupId>
+    <artifactId>junit-jupiter</artifactId>
+    <version>5.10.0</version>
+    <scope>test</scope>
+</dependency>
 ```
 
------
+---
 
-### Unit Test for `ConfigMapServiceImpl`
-
-This test covers the following scenarios:
-
-1.  A ConfigMap exists in both clusters and is identical.
-2.  A ConfigMap exists in both clusters but has different labels.
-3.  A ConfigMap exists only in the 'gl' cluster.
-4.  A ConfigMap exists only in the 's1' cluster.
-5.  A comprehensive test with a mix of all the above cases.
-6.  A scenario where no ConfigMaps are found in either cluster.
-
-<!-- end list -->
+### 🧪 Unit Test Code – `ConfigMapServiceImplTest.java`
 
 ```java
-package com.barclays.iportalmonitoring.service.Impl;
+package com.barclays.iportalmonitoring.service.impl;
 
 import com.barclays.iportalmonitoring.model.ConfigMapResponse;
-import com.barclays.iportalmonitoring.service.ConfigMapService;
-import com.barclays.iportalmonitoring.service.OpenShiftService;
-import com.barclays.iportalmonitoring.util.MapUtils;
+import com.barclays.iportalmonitoring.service.OpenshiftService;
 import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ObjectMeta;
+import io.fabric8.openshift.client.OpenShiftClient;
+import io.fabric8.kubernetes.client.dsl.MixedOperation;
+import io.fabric8.kubernetes.client.dsl.Resource;
+import io.fabric8.kubernetes.client.dsl.Namespaceable;
+import io.fabric8.kubernetes.client.dsl.NonNamespaceOperation;
+
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.annotation.Lazy;
+import org.mockito.MockitoAnnotations;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
-/**
- * Unit tests for ConfigMapServiceImpl.
- */
-@ExtendWith(MockitoExtension.class)
-class ConfigMapServiceImplTest {
-
-    private static final String PROJECT_NAME = "i3037";
-    private static final String CLUSTER_GL = "gl";
-    private static final String CLUSTER_S1 = "s1";
+public class ConfigMapServiceImplTest {
 
     @Mock
-    private OpenShiftService openShiftService; // Dependency of the class under test
+    private OpenshiftService openShiftService;
 
     @Mock
-    @Lazy
-    private ConfigMapService selfMockedConfigMapService; // Mock for the self-injected service to intercept internal calls
+    private OpenShiftClient mockClient;
 
-    @InjectMocks
-    private ConfigMapServiceImpl configMapServiceImpl;
+    @Mock
+    private MixedOperation<ConfigMap, ?, Resource<ConfigMap>> mixedOperation;
 
-    // Helper method to create a mock ConfigMap
-    private ConfigMap createMockConfigMap(String name, Map<String, String> data) {
+    @Mock
+    private Namespaceable<NonNamespaceOperation<ConfigMap, ?, Resource<ConfigMap>>> namespaceable;
+
+    @Mock
+    private NonNamespaceOperation<ConfigMap, ?, Resource<ConfigMap>> nonNamespaceOperation;
+
+    private ConfigMapServiceImpl configMapService;
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        configMapService = new ConfigMapServiceImpl(openShiftService);
+
+        when(openShiftService.getActiveClient()).thenReturn(mockClient);
+        when(mockClient.configMaps()).thenReturn((MixedOperation) mixedOperation);
+        when(mixedOperation.inNamespace(anyString())).thenReturn((NonNamespaceOperation) nonNamespaceOperation);
+    }
+
+    private ConfigMap createConfigMap(String name, Map<String, String> labels) {
         ConfigMap configMap = new ConfigMap();
-        ObjectMeta metadata = new ObjectMeta();
-        metadata.setName(name);
-        metadata.setLabels(data); // The service implementation uses labels for comparison
-        configMap.setMetadata(metadata);
+        ObjectMeta meta = new ObjectMeta();
+        meta.setName(name);
+        meta.setLabels(labels);
+        configMap.setMetadata(meta);
         return configMap;
     }
 
     @Test
-    @DisplayName("Should find one identical ConfigMap in both clusters")
-    void testCompareConfigMaps_WhenIdentical() {
-        // Arrange  अरेंज
-        ConfigMap commonConfig = createMockConfigMap("app-config", Map.of("version", "1.0"));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_GL, PROJECT_NAME)).thenReturn(List.of(commonConfig));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_S1, PROJECT_NAME)).thenReturn(List.of(commonConfig));
+    void testCompareConfigMaps_SameLabels() {
+        String project = "test-project";
 
-        // Act कार्य
-        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(PROJECT_NAME);
+        ConfigMap glMap = createConfigMap("my-config", Map.of("env", "prod"));
+        ConfigMap slMap = createConfigMap("my-config", Map.of("env", "prod"));
 
-        // Assert पुष्टि
-        assertThat(result).hasSize(1).containsKey("app-config");
-        ConfigMapResponse response = result.get("app-config");
-        assertThat(response.getGl()).isEqualTo("Available");
-        assertThat(response.getS1()).isEqualTo("Available");
-        assertThat(response.getDifference()).isEqualTo(Map.of("info", "No differences found"));
+        when(nonNamespaceOperation.list().getItems())
+                .thenReturn(List.of(glMap))  // GL
+                .thenReturn(List.of(slMap)); // SL
+
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
+
+        assertEquals(1, result.size());
+        ConfigMapResponse response = result.get("my-config");
+        assertEquals("Available", response.getGl());
+        assertEquals("Available", response.getS1());
+        assertTrue(((Map<?, ?>) response.getDifference()).get("info").equals("No differences found"));
     }
 
     @Test
-    @DisplayName("Should find one different ConfigMap in both clusters")
-    void testCompareConfigMaps_WhenDifferent() {
-        // Arrange अरेंज
-        ConfigMap glConfig = createMockConfigMap("app-config", Map.of("version", "1.0", "env", "uat"));
-        ConfigMap s1Config = createMockConfigMap("app-config", Map.of("version", "1.1", "env", "uat"));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_GL, PROJECT_NAME)).thenReturn(List.of(glConfig));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_S1, PROJECT_NAME)).thenReturn(List.of(s1Config));
-        
-        // Mock the static utility method if its logic is complex. For this test, we assume it's tested elsewhere
-        // and just verify the output is not the "no differences" message.
-        // Map<String, Map<String, String>> expectedDiff = Map.of("version", Map.of("gl_value", "1.0", "s1_value", "1.1"));
+    void testCompareConfigMaps_DifferentLabels() {
+        String project = "test-project";
 
-        // Act कार्य
-        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(PROJECT_NAME);
+        ConfigMap glMap = createConfigMap("my-config", Map.of("env", "prod"));
+        ConfigMap slMap = createConfigMap("my-config", Map.of("env", "dev"));
 
-        // Assert पुष्टि
-        assertThat(result).hasSize(1).containsKey("app-config");
-        ConfigMapResponse response = result.get("app-config");
-        assertThat(response.getGl()).isEqualTo("Available");
-        assertThat(response.getS1()).isEqualTo("Available");
-        assertThat(response.getDifference()).isInstanceOf(Map.class);
-        assertThat(response.getDifference()).isNotEqualTo(Map.of("info", "No differences found"));
+        when(nonNamespaceOperation.list().getItems())
+                .thenReturn(List.of(glMap))  // GL
+                .thenReturn(List.of(slMap)); // SL
+
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
+
+        assertEquals(1, result.size());
+        ConfigMapResponse response = result.get("my-config");
+        assertEquals("Available", response.getGl());
+        assertEquals("Available", response.getS1());
+
+        Map<?, ?> diff = (Map<?, ?>) response.getDifference();
+        assertTrue(diff.containsKey("glOnly") || diff.containsKey("s1Only") || diff.containsKey("differences"));
     }
 
     @Test
-    @DisplayName("Should find ConfigMap only in 'gl' cluster")
-    void testCompareConfigMaps_WhenOnlyInGL() {
-        // Arrange अरेंज
-        ConfigMap glConfig = createMockConfigMap("gl-only-config", Map.of("key", "value"));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_GL, PROJECT_NAME)).thenReturn(List.of(glConfig));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_S1, PROJECT_NAME)).thenReturn(Collections.emptyList());
+    void testCompareConfigMaps_MissingInSL() {
+        String project = "test-project";
 
-        // Act कार्य
-        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(PROJECT_NAME);
+        ConfigMap glMap = createConfigMap("only-in-gl", Map.of("env", "prod"));
 
-        // Assert पुष्टि
-        assertThat(result).hasSize(1).containsKey("gl-only-config");
-        ConfigMapResponse response = result.get("gl-only-config");
-        assertThat(response.getGl()).isEqualTo("Available");
-        assertThat(response.getS1()).isEqualTo("Unavailable");
-        assertThat(response.getDifference()).isEqualTo(Map.of("info", "ConfigMap Missing in one cluster"));
+        when(nonNamespaceOperation.list().getItems())
+                .thenReturn(List.of(glMap))  // GL
+                .thenReturn(Collections.emptyList()); // SL
+
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
+
+        ConfigMapResponse response = result.get("only-in-gl");
+        assertEquals("Available", response.getGl());
+        assertEquals("Unavailable", response.getS1());
+        assertEquals("ConfigMap Missing in one cluster", ((Map<?, ?>) response.getDifference()).get("info"));
     }
 
     @Test
-    @DisplayName("Should find ConfigMap only in 's1' cluster")
-    void testCompareConfigMaps_WhenOnlyInS1() {
-        // Arrange अरेंज
-        ConfigMap s1Config = createMockConfigMap("s1-only-config", Map.of("key", "value"));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_GL, PROJECT_NAME)).thenReturn(Collections.emptyList());
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_S1, PROJECT_NAME)).thenReturn(List.of(s1Config));
+    void testCompareConfigMaps_MissingInGL() {
+        String project = "test-project";
 
-        // Act कार्य
-        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(PROJECT_NAME);
+        ConfigMap slMap = createConfigMap("only-in-sl", Map.of("env", "dev"));
 
-        // Assert पुष्टि
-        assertThat(result).hasSize(1).containsKey("s1-only-config");
-        ConfigMapResponse response = result.get("s1-only-config");
-        assertThat(response.getGl()).isEqualTo("Unavailable");
-        assertThat(response.getS1()).isEqualTo("Available");
-        assertThat(response.getDifference()).isEqualTo(Map.of("info", "ConfigMap Missing in one cluster"));
-    }
+        when(nonNamespaceOperation.list().getItems())
+                .thenReturn(Collections.emptyList())  // GL
+                .thenReturn(List.of(slMap)); // SL
 
-    @Test
-    @DisplayName("Should handle a mix of identical, different, and missing ConfigMaps")
-    void testCompareConfigMaps_WithMixedResults() {
-        // Arrange अरेंज
-        ConfigMap identicalConfig = createMockConfigMap("identical-config", Map.of("id", "1"));
-        ConfigMap diffConfigGl = createMockConfigMap("diff-config", Map.of("version", "gl-1"));
-        ConfigMap diffConfigS1 = createMockConfigMap("diff-config", Map.of("version", "s1-1"));
-        ConfigMap glOnlyConfig = createMockConfigMap("gl-only-config", Map.of("id", "2"));
-        ConfigMap s1OnlyConfig = createMockConfigMap("s1-only-config", Map.of("id", "3"));
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
 
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_GL, PROJECT_NAME))
-                .thenReturn(List.of(identicalConfig, diffConfigGl, glOnlyConfig));
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(CLUSTER_S1, PROJECT_NAME))
-                .thenReturn(List.of(identicalConfig, diffConfigS1, s1OnlyConfig));
-
-        // Act कार्य
-        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(PROJECT_NAME);
-
-        // Assert पुष्टि
-        assertThat(result).hasSize(4);
-
-        // 1. Identical
-        assertThat(result.get("identical-config").getGl()).isEqualTo("Available");
-        assertThat(result.get("identical-config").getS1()).isEqualTo("Available");
-        assertThat(result.get("identical-config").getDifference()).isEqualTo(Map.of("info", "No differences found"));
-
-        // 2. Different
-        assertThat(result.get("diff-config").getGl()).isEqualTo("Available");
-        assertThat(result.get("diff-config").getS1()).isEqualTo("Available");
-        assertThat(result.get("diff-config").getDifference()).isNotEqualTo(Map.of("info", "No differences found"));
-
-        // 3. GL Only
-        assertThat(result.get("gl-only-config").getGl()).isEqualTo("Available");
-        assertThat(result.get("gl-only-config").getS1()).isEqualTo("Unavailable");
-        assertThat(result.get("gl-only-config").getDifference()).isEqualTo(Map.of("info", "ConfigMap Missing in one cluster"));
-
-        // 4. S1 Only
-        assertThat(result.get("s1-only-config").getGl()).isEqualTo("Unavailable");
-        assertThat(result.get("s1-only-config").getS1()).isEqualTo("Available");
-        assertThat(result.get("s1-only-config").getDifference()).isEqualTo(Map.of("info", "ConfigMap Missing in one cluster"));
-    }
-    
-    @Test
-    @DisplayName("Should return an empty map when no ConfigMaps are found in either cluster")
-    void testCompareConfigMaps_WhenNoConfigMapsExist() {
-        // Arrange अरेंज
-        when(selfMockedConfigMapService.getConfigMapsFromCluster(anyString(), anyString())).thenReturn(Collections.emptyList());
-
-        // Act कार्य
-        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(PROJECT_NAME);
-
-        // Assert पुष्टि
-        assertThat(result).isNotNull();
-        assertThat(result).isEmpty();
+        ConfigMapResponse response = result.get("only-in-sl");
+        assertEquals("Unavailable", response.getGl());
+        assertEquals("Available", response.getS1());
+        assertEquals("ConfigMap Missing in one cluster", ((Map<?, ?>) response.getDifference()).get("info"));
     }
 }
 ```
+
+---
+
+### 📌 Notes:
+
+* This test mocks the behavior of both GL and SL clusters using `thenReturn(...)` for `.list().getItems()`.
+* The `createConfigMap(...)` helper sets metadata and labels.
+* It covers four test cases:
+
+  1. Same labels
+  2. Different labels
+  3. Missing in SL
+  4. Missing in GL
+
+---
+
+Let me know if you also want to mock `MapUtils.diffStringMaps(...)` behavior explicitly or test edge cases like nulls.
