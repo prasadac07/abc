@@ -1,0 +1,86 @@
+package com.barclays.iportalmonitoring.model;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Schema(description = "Represents a single event that occurred within an OpenShift project.")
+public class EventResponse {
+
+    @Schema(description = "The timestamp of when the event last occurred.")
+    private String timestamp;
+
+    @Schema(description = "The type of event (e.g., 'Normal', 'Warning').", example = "Normal")
+    private String type;
+
+    @Schema(description = "The reason for the event.", example = "SuccessfulCreate")
+    private String reason;
+
+    @Schema(description = "A detailed message about the event.", example = "Created pod: my-app-pod-123")
+    private String message;
+
+    @Schema(description = "The kind of object involved in the event (e.g., 'Pod', 'Deployment').", example = "Pod")
+    private String resourceKind;
+
+    @Schema(description = "The name of the object involved in the event.", example = "my-app-pod-123")
+    private String resourceName;
+
+    @Schema(description = "The namespace of the object involved in the event.", example = "my-project")
+    private String resourceNamespace;
+}
+
+
+
+package com.barclays.iportalmonitoring.model;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Schema(description = "Represents a summary of all resources within a project.")
+public class InventoryResponse {
+
+    @Schema(description = "The current phase of the project.", example = "Active")
+    private String status;
+
+    @Schema(description = "Total number of pods.", example = "12")
+    private int pods;
+
+    @Schema(description = "Total number of services.", example = "5")
+    private int services;
+
+    @Schema(description = "Total number of routes.", example = "3")
+    private int routes;
+
+    @Schema(description = "Total number of deployments.", example = "4")
+    private int deployments;
+
+    @Schema(description = "Total number of replica sets.", example = "4")
+    private int replicasets;
+
+    @Schema(description = "Total number of stateful sets.", example = "1")
+    private int statefulSets;
+
+    @Schema(description = "Total number of jobs.", example = "0")
+    private int jobs;
+
+    @Schema(description = "Total number of cron jobs.", example = "2")
+    private int cronJobs;
+
+    @Schema(description = "Total number of ingresses.", example = "1")
+    private int ingresses;
+
+    @Schema(description = "Total number of persistent volume claims (PVCs).", example = "3")
+    private int persistentVolumeClaims;
+
+    @Schema(description = "Total number of config maps.", example = "10")
+    private int configmaps;
+}
