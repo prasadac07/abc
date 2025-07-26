@@ -228,3 +228,61 @@ class ProjectControllerTest {
     }
 }
 ```
+
+package com.barclays.iportalmonitoring.controller;
+
+import com.barclays.iportalmonitoring.model.EventResponse;
+import com.barclays.iportalmonitoring.service.ProjectService;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.core.publisher.Flux;
+import java.util.Map;
+
+import static org.mockito.Mockito.when;
+
+// FIX: Use @WebFluxTest to test only the controller slice
+@WebFluxTest(controllers = ProjectController.class)
+class ProjectControllerTest {
+
+    @Autowired
+    private WebTestClient webTestClient;
+
+    // @MockBean is still used here, but in the context of a slice test,
+    // it's used to provide the necessary dependencies for the controller.
+    @MockBean
+    private ProjectService mockProjectService;
+
+    @Test
+    void getAllProjects_whenClusterIsBoth_returnsListOfStrings() {
+        // This test remains the same
+        when(mockProjectService.getAllProjectsBothClusters()).thenReturn(java.util.List.of("Project-A", "Project-B"));
+
+        webTestClient.get()
+                .uri("/api/iportal/projects?cluster=both")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBodyList(String.class)
+                .hasSize(2);
+    }
+
+    @Test
+    void getAllProjectEvents_shouldStreamSseEvents() {
+        // This test also remains the same
+        EventResponse event1 = new EventResponse();
+        event1.setReason("Started");
+        when(mockProjectService.getProjectEvents("gl", "test-project"))
+                .thenReturn(Flux.just(event1));
+
+        webTestClient.get()
+                .uri("/api/iportal/projects/events/test-project?cluster=gl")
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBodyList(EventResponse.class)
+                .hasSize(1);
+    }
+}
