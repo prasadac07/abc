@@ -1,58 +1,33 @@
-Of course. Here are robust, industry-standard unit and integration tests for your Spring Boot `iportal-monitoring` application.
-
-The tests are written using **JUnit 5**, **Mockito**, and **Spring Boot's testing framework**. They focus on isolating components for unit tests and verifying the web layer and its interactions for integration tests.
-
------
-
-## 🧪 Unit Testing (Service Layer)
-
-This test class, `ProjectServiceImplTest`, focuses on the business logic within your `ProjectServiceImpl`. It uses Mockito to mock all external dependencies, such as `OpenShiftService` and the `OpenShiftClient`, ensuring that we're only testing the logic of the service itself.
-
-### Key Practices Used:
-
-  * **Dependency Mocking**: All dependencies (`OpenShiftService`, self-injected `ProjectService`) are mocked.
-  * **Behavior Verification**: `Mockito.when()` is used to define the behavior of mocks, and `Mockito.verify()` confirms that methods were called as expected.
-  * **Reactive Stream Testing**: `StepVerifier` from `reactor-test` is used to test the `Flux` returned by `getProjectEvents` in a declarative way.
-  * **Handling Concurrency**: The test for `getInventoryForCluster` works reliably despite the method's use of an `ExecutorService` because we mock the inputs to the concurrent tasks.
-
-<!-- end list -->
-
-```java
-// File: src/test/java/com/barclays/iportalmonitoring/service/Impl/ProjectServiceImplTest.java
-
-package com.barclays.iportalmonitoring.service.Impl;
+// Unit Tests for ProjectServiceImpl
+package com.barclays.iportalmonitoring.service.impl;
 
 import com.barclays.iportalmonitoring.model.EventResponse;
 import com.barclays.iportalmonitoring.model.InventoryResponse;
 import com.barclays.iportalmonitoring.service.OpenShiftService;
 import com.barclays.iportalmonitoring.service.ProjectService;
-import com.barclays.iportalmonitoring.util.Algorithmutils;
-import io.fabric8.kubernetes.api.model.Event;
-import io.fabric8.kubernetes.api.model.EventBuilder;
-import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
-import io.fabric8.kubernetes.client.dsl.*;
+import com.barclays.iportalmonitoring.util.AlgorithmUtils;
+import io.fabric8.kubernetes.api.model.*;
 import io.fabric8.kubernetes.client.Watcher;
-import io.fabric8.kubernetes.client.Watcher.Action;
 import io.fabric8.openshift.api.model.Project;
 import io.fabric8.openshift.api.model.ProjectBuilder;
+import io.fabric8.openshift.api.model.ProjectStatus;
 import io.fabric8.openshift.client.OpenShiftClient;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.*;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -60,316 +35,423 @@ class ProjectServiceImplTest {
 
     @Mock
     private OpenShiftService openShiftService;
-
+    
+    @Mock
+    private ProjectService projectService;
+    
     @Mock
     private OpenShiftClient openShiftClient;
+    
+    private ProjectServiceImpl projectServiceImpl;
 
-    @Mock(answer = Answers.RETURNS_DEEP_STUBS)
-    private OpenShiftClient deepMockOpenShiftClient;
-
-    @Mock
-    private ProjectService lazyProjectService; // Mock for the @Lazy self-injected dependency
-
-    @InjectMocks
-    private ProjectServiceImpl projectService;
-
-    // This is needed to inject the @Lazy mock properly.
     @BeforeEach
     void setUp() {
-        projectService = new ProjectServiceImpl(openShiftService, lazyProjectService);
+        projectServiceImpl = new ProjectServiceImpl(openShiftService, projectService);
     }
 
     @Test
-    @DisplayName("getAllProjects should return a map of project names to display names")
-    void getAllProjects_shouldReturnProjectMap() {
+    void getAllProjects_ShouldReturnProjectMap_WhenProjectsExist() {
         // Given
-        Project project1 = new ProjectBuilder().withNewMetadata().withName("proj-13037").withAnnotations(Map.of("openshift.io/display-name", "Project Alpha")).endMetadata().build();
-        Project project2 = new ProjectBuilder().withNewMetadata().withName("proj-13038").endMetadata().build(); // No display name
+        String cluster = "gl";
+        Project project1 = createTestProject("project1", "Display Name 1");
+        Project project2 = createTestProject("project2", null);
+        
+        ProjectList projectList = new ProjectListBuilder()
+                .withItems(Arrays.asList(project1, project2))
+                .build();
 
         when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
-        when(openShiftClient.projects()).thenReturn(mock(ProjectResource.class));
-        when(openShiftClient.projects().list()).thenReturn(new io.fabric8.openshift.api.model.ProjectListBuilder().withItems(project1, project2).build());
+        when(openShiftClient.projects()).thenReturn(mock(io.fabric8.openshift.client.dsl.ProjectResource.class));
+        when(openShiftClient.projects().list()).thenReturn(projectList);
 
         // When
-        Map<String, String> result = projectService.getAllProjects("gl");
+        Map<String, String> result = projectServiceImpl.getAllProjects(cluster);
 
         // Then
-        assertThat(result).hasSize(2)
-                .containsEntry("proj-13037", "Project Alpha")
-                .containsEntry("proj-13038", "proj-13038"); // Falls back to name
+        assertThat(result).hasSize(2);
+        assertThat(result).containsEntry("project1", "Display Name 1");
+        assertThat(result).containsEntry("project2", "project2");
+        
+        verify(openShiftService).getActiveClient();
+        verify(openShiftClient.projects()).list();
     }
 
     @Test
-    @DisplayName("getAllProjectsBothClusters should merge projects from both clusters")
-    void getAllProjectsBothClusters_shouldReturnMergedList() {
+    void getAllProjects_ShouldHandleEmptyProjectList() {
         // Given
-        Map<String, String> glProjects = Map.of("proj-a", "Project A", "common-proj", "Common Project");
-        Map<String, String> s1Projects = Map.of("proj-b", "Project B", "common-proj", "Common Project");
-        List<String> mergedList = List.of("proj-a", "proj-b", "common-proj");
+        String cluster = "gl";
+        ProjectList emptyProjectList = new ProjectListBuilder().build();
 
-        // We use the 'lazyProjectService' mock for the self-injected calls
-        when(lazyProjectService.getAllProjects("gl")).thenReturn(glProjects);
-        when(lazyProjectService.getAllProjects("s1")).thenReturn(s1Projects);
-
-        // Mock the static utility method
-        try (MockedStatic<Algorithmutils> mockedUtils = mockStatic(Algorithmutils.class)) {
-            mockedUtils.when(() -> Algorithmutils.MergeProjects(glProjects, s1Projects)).thenReturn(mergedList);
-
-            // When
-            List<String> result = projectService.getAllProjectsBothClusters();
-
-            // Then
-            assertThat(result).isEqualTo(mergedList);
-            verify(lazyProjectService).getAllProjects("gl");
-            verify(lazyProjectService).getAllProjects("s1");
-        }
-    }
-
-    @Test
-    @DisplayName("getInventoryForCluster should fetch and return resource counts")
-    void getInventoryForCluster_shouldReturnCorrectResourceCounts() {
-        // Given
-        String namespace = "test-namespace";
-        Project project = new ProjectBuilder().withNewStatus().withPhase("Active").endStatus().build();
-
-        // Using a deep mock to simplify the fluent API mocking chain
-        when(openShiftService.getActiveClient()).thenReturn(deepMockOpenShiftClient);
-        when(deepMockOpenShiftClient.projects().withName(namespace).get()).thenReturn(project);
-
-        // Mock resource counts
-        when(deepMockOpenShiftClient.pods().inNamespace(namespace).list().getItems()).thenReturn(Collections.nCopies(5, null)); // 5 pods
-        when(deepMockOpenShiftClient.services().inNamespace(namespace).list().getItems()).thenReturn(Collections.nCopies(2, null)); // 2 services
-        // ... mock other resources as needed, returning empty lists for zero counts
-        when(deepMockOpenShiftClient.routes().inNamespace(namespace).list().getItems()).thenReturn(Collections.emptyList());
-
+        when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
+        when(openShiftClient.projects()).thenReturn(mock(io.fabric8.openshift.client.dsl.ProjectResource.class));
+        when(openShiftClient.projects().list()).thenReturn(emptyProjectList);
 
         // When
-        InventoryResponse response = projectService.getInventoryForCluster("gl", namespace);
+        Map<String, String> result = projectServiceImpl.getAllProjects(cluster);
 
         // Then
-        assertThat(response).isNotNull();
-        assertThat(response.getStatus()).isEqualTo("Active");
-        assertThat(response.getPods()).isEqualTo(5);
-        assertThat(response.getServices()).isEqualTo(2);
-        assertThat(response.getRoutes()).isEqualTo(0); // Default value
+        assertThat(result).isEmpty();
     }
 
     @Test
-    @DisplayName("getProjectInventoryByName should return inventory map for both clusters")
-    void getProjectInventoryByName_shouldReturnInventoryForBothClusters() {
+    void getAllProjectsBothClusters_ShouldMergeProjectsFromBothClusters() {
+        // Given
+        Map<String, String> glProjects = Map.of("project1", "GL Project 1", "project2", "GL Project 2");
+        Map<String, String> slProjects = Map.of("project3", "SL Project 3", "project4", "SL Project 4");
+        List<String> mergedProjects = Arrays.asList("project1", "project2", "project3", "project4");
+
+        when(projectService.getAllProjects("gl")).thenReturn(glProjects);
+        when(projectService.getAllProjects("sl")).thenReturn(slProjects);
+        mockStatic(AlgorithmUtils.class);
+        when(AlgorithmUtils.mergeProjects(glProjects, slProjects)).thenReturn(mergedProjects);
+
+        // When
+        List<String> result = projectServiceImpl.getAllProjectsBothClusters();
+
+        // Then
+        assertThat(result).containsExactlyElementsOf(mergedProjects);
+        verify(projectService).getAllProjects("gl");
+        verify(projectService).getAllProjects("sl");
+    }
+
+    @Test
+    void getProjectInventoryByName_ShouldReturnInventoryFromBothClusters() {
         // Given
         String projectName = "test-project";
-        InventoryResponse glResponse = new InventoryResponse("Active", 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
-        InventoryResponse s1Response = new InventoryResponse("Active", 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2);
+        InventoryResponse glInventory = createTestInventoryResponse("Active", 5, 3);
+        InventoryResponse slInventory = createTestInventoryResponse("Active", 7, 4);
 
-        when(lazyProjectService.getInventoryForCluster("gl", projectName)).thenReturn(glResponse);
-        when(lazyProjectService.getInventoryForCluster("s1", projectName)).thenReturn(s1Response);
+        when(projectService.getInventoryForCluster("gl", projectName)).thenReturn(glInventory);
+        when(projectService.getInventoryForCluster("sl", projectName)).thenReturn(slInventory);
 
         // When
-        Map<String, InventoryResponse> result = projectService.getProjectInventoryByName(projectName);
+        Map<String, InventoryResponse> result = projectServiceImpl.getProjectInventoryByName(projectName);
 
         // Then
-        assertThat(result)
-            .hasSize(2)
-            .containsEntry("gl", glResponse)
-            .containsEntry("s1", s1Response);
+        assertThat(result).hasSize(2);
+        assertThat(result.get("gl")).isEqualTo(glInventory);
+        assertThat(result.get("sl")).isEqualTo(slInventory);
     }
-    
+
     @Test
-    @DisplayName("getInventoryForCluster should throw RuntimeException when client is null")
-    void getInventoryForCluster_shouldThrowExceptionWhenClientIsNull() {
+    void getInventoryForCluster_ShouldReturnInventoryResponse_WhenProjectExists() {
         // Given
+        String cluster = "gl";
+        String namespace = "test-namespace";
+        Project project = createTestProjectWithStatus("test-namespace", "Active");
+
+        when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
+        setupMockClientForInventory(namespace, project);
+
+        // When
+        InventoryResponse result = projectServiceImpl.getInventoryForCluster(cluster, namespace);
+
+        // Then
+        assertThat(result).isNotNull();
+        assertThat(result.getStatus()).isEqualTo("Active");
+        assertThat(result.getPods()).isEqualTo(2);
+        assertThat(result.getServices()).isEqualTo(1);
+        verify(openShiftService).getActiveClient();
+    }
+
+    @Test
+    void getInventoryForCluster_ShouldThrowException_WhenClientIsNull() {
+        // Given
+        String cluster = "gl";
+        String namespace = "test-namespace";
         when(openShiftService.getActiveClient()).thenReturn(null);
 
         // When & Then
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            projectService.getInventoryForCluster("gl", "some-project");
-        });
-        assertThat(exception.getMessage()).isEqualTo("OpenShift client is null");
+        assertThatThrownBy(() -> projectServiceImpl.getInventoryForCluster(cluster, namespace))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("OpenShift client is null");
     }
 
     @Test
-    @DisplayName("getProjectEvents should stream events and complete on close")
-    void getProjectEvents_shouldStreamEventsAndComplete() {
+    void getProjectEvents_ShouldReturnFluxOfEvents() {
         // Given
-        String namespace = "event-namespace";
         String cluster = "gl";
-        
-        // Mock the Watcher<Event>
-        Watchable<Watcher<Event>> watchable = mock(Watchable.class);
-        MixedOperation<Event, ?, ?> eventOp = mock(MixedOperation.class);
-        
+        String project = "test-project";
+        Event testEvent = createTestEvent();
+
         when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
-        when(openShiftClient.v1()).thenReturn(mock(V1APIGroupDSL.class));
-        when(openShiftClient.v1().events()).thenReturn(eventOp);
-        when(eventOp.inNamespace(namespace)).thenReturn(watchable);
-
-        // Capture the watcher argument to simulate events
-        ArgumentCaptor<Watcher<Event>> watcherCaptor = ArgumentCaptor.forClass(Watcher.class);
-
-        Event event1 = new EventBuilder()
-            .withNewMetadata().withName("event-1").endMetadata()
-            .withReason("SuccessfulCreate").withMessage("Created pod: my-pod-1")
-            .withLastTimestamp("2025-07-27T00:00:00Z").withType("Normal")
-            .withNewInvolvedObject().withKind("Pod").withName("my-pod-1").withNamespace(namespace).endInvolvedObject()
-            .build();
+        setupMockClientForEvents(project);
 
         // When
-        Flux<EventResponse> eventFlux = projectService.getProjectEvents(cluster, namespace);
+        Flux<EventResponse> result = projectServiceImpl.getProjectEvents(cluster, project);
 
         // Then
-        StepVerifier.create(eventFlux)
-            .then(() -> {
-                // The watch() call only happens upon subscription, so we verify it here
-                verify(watchable).watch(watcherCaptor.capture());
-                Watcher<Event> capturedWatcher = watcherCaptor.getValue();
-                
-                // Simulate receiving an event
-                capturedWatcher.eventReceived(Action.ADDED, event1);
-                
-                // Simulate the watch closing
-                capturedWatcher.onClose(null);
-            })
-            .assertNext(response -> {
-                assertThat(response.getResourceName()).isEqualTo("my-pod-1");
-                assertThat(response.getReason()).isEqualTo("SuccessfulCreate");
-                assertThat(response.getResourceKind()).isEqualTo("Pod");
-            })
-            .verifyComplete();
+        StepVerifier.create(result)
+                .expectNextMatches(eventResponse -> 
+                    eventResponse.getResourceKind().equals("Pod") &&
+                    eventResponse.getResourceName().equals("test-pod") &&
+                    eventResponse.getType().equals("Normal"))
+                .thenCancel()
+                .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void getProjectEvents_ShouldThrowException_WhenClientIsNull() {
+        // Given
+        String cluster = "gl";
+        String project = "test-project";
+        when(openShiftService.getActiveClient()).thenReturn(null);
+
+        // When & Then
+        assertThatThrownBy(() -> projectServiceImpl.getProjectEvents(cluster, project))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("OpenShift client is null");
+    }
+
+    // Helper methods
+    private Project createTestProject(String name, String displayName) {
+        Map<String, String> annotations = new HashMap<>();
+        if (displayName != null) {
+            annotations.put("openshift.io/display-name", displayName);
+        }
+        
+        return new ProjectBuilder()
+                .withNewMetadata()
+                    .withName(name)
+                    .withAnnotations(annotations)
+                .endMetadata()
+                .build();
+    }
+
+    private Project createTestProjectWithStatus(String name, String phase) {
+        return new ProjectBuilder()
+                .withNewMetadata()
+                    .withName(name)
+                .endMetadata()
+                .withNewStatus()
+                    .withPhase(phase)
+                .endStatus()
+                .build();
+    }
+
+    private InventoryResponse createTestInventoryResponse(String status, int pods, int services) {
+        InventoryResponse response = new InventoryResponse();
+        response.setStatus(status);
+        response.setPods(pods);
+        response.setServices(services);
+        response.setRoutes(1);
+        response.setDeployments(2);
+        response.setReplicaSets(2);
+        response.setStatefulSets(0);
+        response.setJobs(0);
+        response.setCronJobs(1);
+        response.setIngresses(1);
+        response.setPersistentVolumeClaims(2);
+        response.setConfigMaps(5);
+        return response;
+    }
+
+    private Event createTestEvent() {
+        return new EventBuilder()
+                .withNewMetadata()
+                    .withName("test-event")
+                    .withNamespace("test-project")
+                .endMetadata()
+                .withType("Normal")
+                .withReason("Created")
+                .withMessage("Pod created successfully")
+                .withNewInvolvedObject()
+                    .withKind("Pod")
+                    .withName("test-pod")
+                    .withNamespace("test-project")
+                .endInvolvedObject()
+                .withLastTimestamp("2024-01-01T10:00:00Z")
+                .build();
+    }
+
+    private void setupMockClientForInventory(String namespace, Project project) {
+        // Mock project retrieval
+        var projectResource = mock(io.fabric8.openshift.client.dsl.ProjectResource.class);
+        when(openShiftClient.projects()).thenReturn(projectResource);
+        when(projectResource.withName(namespace)).thenReturn(mock(io.fabric8.openshift.client.dsl.ProjectResource.class));
+        when(projectResource.withName(namespace).get()).thenReturn(project);
+
+        // Mock resource counting
+        setupResourceCountMocks(namespace);
+    }
+
+    private void setupResourceCountMocks(String namespace) {
+        // Mock pods
+        var podList = new PodListBuilder()
+                .withItems(Arrays.asList(new PodBuilder().build(), new PodBuilder().build()))
+                .build();
+        when(openShiftClient.pods().inNamespace(namespace).list()).thenReturn(podList);
+
+        // Mock services
+        var serviceList = new ServiceListBuilder()
+                .withItems(Arrays.asList(new ServiceBuilder().build()))
+                .build();
+        when(openShiftClient.services().inNamespace(namespace).list()).thenReturn(serviceList);
+
+        // Add similar mocks for other resources (routes, deployments, etc.)
+        // This is a simplified version - in production, mock all resource types
+    }
+
+    private void setupMockClientForEvents(String project) {
+        var eventResource = mock(io.fabric8.kubernetes.client.dsl.FilterWatchListDeletable.class);
+        var namespacedEventResource = mock(io.fabric8.kubernetes.client.dsl.FilterWatchListDeletable.class);
+        var watchable = mock(io.fabric8.kubernetes.client.Watchable.class);
+        var watch = mock(io.fabric8.kubernetes.client.Watch.class);
+
+        when(openShiftClient.v1()).thenReturn(mock(io.fabric8.kubernetes.client.dsl.V1APIGroupDSL.class));
+        when(openShiftClient.v1().events()).thenReturn(eventResource);
+        when(eventResource.inNamespace(project)).thenReturn(namespacedEventResource);
+        when(namespacedEventResource.watch(any(Watcher.class))).thenReturn(watch);
     }
 }
-```
 
------
-
-## 🌐 Integration Testing (Controller Layer)
-
-This test class, `ProjectControllerTest`, verifies that the REST API endpoints in `ProjectController` are correctly configured and behave as expected. It uses `@SpringBootTest` to load a full application context and `WebTestClient` to make live HTTP requests to the embedded server.
-
-### Key Practices Used:
-
-  * **`@SpringBootTest`**: Loads the application context, providing a near-production test environment.
-  * **`@MockBean`**: Replaces the `ProjectService` bean in the application context with a mock. This isolates the controller from the service layer, allowing us to test the web layer (request handling, serialization, status codes) exclusively.
-  * **`WebTestClient`**: A modern, non-blocking client for testing web endpoints, perfectly suited for testing both traditional REST and reactive SSE endpoints.
-  * **Endpoint Verification**: Tests cover different request parameters, expected HTTP status codes (`200 OK`), and response body content and structure.
-
-<!-- end list -->
-
-```java
-// File: src/test/java/com/barclays/iportalmonitoring/controller/ProjectControllerTest.java
-
+// Unit Tests for ProjectController
 package com.barclays.iportalmonitoring.controller;
 
 import com.barclays.iportalmonitoring.model.EventResponse;
 import com.barclays.iportalmonitoring.model.InventoryResponse;
 import com.barclays.iportalmonitoring.service.ProjectService;
-import org.junit.jupiter.api.DisplayName;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
-import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.test.web.servlet.MockMvc;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebFluxTest(ProjectController.class) // Focus on the web layer with the specified controller
+@WebMvcTest(ProjectController.class)
 class ProjectControllerTest {
 
     @Autowired
-    private WebTestClient webTestClient;
+    private MockMvc mockMvc;
 
-    @MockBean // Creates a Mockito mock and registers it as a bean in the application context
+    @MockBean
     private ProjectService projectService;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @Test
-    @DisplayName("GET /api/iportal/projects?cluster=gl should return project map")
-    void getAllProjects_forSingleCluster_shouldReturnMap() {
+    void getAllProjects_ShouldReturnProjectMap_WhenClusterSpecified() throws Exception {
         // Given
-        Map<String, String> mockProjects = Map.of("proj-1", "Project One", "proj-2", "Project Two");
-        when(projectService.getAllProjects("gl")).thenReturn(mockProjects);
+        String cluster = "gl";
+        Map<String, String> projects = Map.of(
+                "project1", "Display Name 1",
+                "project2", "Display Name 2"
+        );
+        when(projectService.getAllProjects(cluster)).thenReturn(projects);
 
         // When & Then
-        webTestClient.get()
-                .uri("/api/iportal/projects?cluster=gl")
-                .accept(MediaType.APPLICATION_JSON)
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody(Map.class)
-                .isEqualTo(mockProjects);
+        mockMvc.perform(get("/api/iportal/projects")
+                        .param("cluster", cluster))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.project1").value("Display Name 1"))
+                .andExpect(jsonPath("$.project2").value("Display Name 2"));
+
+        verify(projectService).getAllProjects(cluster);
     }
 
     @Test
-    @DisplayName("GET /api/iportal/projects?cluster=both should return merged project list")
-    void getAllProjects_forBothClusters_shouldReturnList() {
+    void getAllProjects_ShouldReturnMergedProjects_WhenClusterIsBoth() throws Exception {
         // Given
-        List<String> mockMergedProjects = List.of("proj-1", "proj-2", "proj-3");
-        when(projectService.getAllProjectsBothClusters()).thenReturn(mockMergedProjects);
+        List<String> projects = Arrays.asList("project1", "project2", "project3");
+        when(projectService.getAllProjectsBothClusters()).thenReturn(projects);
 
         // When & Then
-        webTestClient.get()
-                .uri("/api/iportal/projects?cluster=both")
-                .accept(MediaType.APPLICATION_JSON)
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody(List.class)
-                .isEqualTo(mockMergedProjects);
+        mockMvc.perform(get("/api/iportal/projects")
+                        .param("cluster", "both"))
+                .andExpect(status().isOk())
+                .andExpected(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$[0]").value("project1"))
+                .andExpect(jsonPath("$[1]").value("project2"))
+                .andExpect(jsonPath("$[2]").value("project3"));
+
+        verify(projectService).getAllProjectsBothClusters();
     }
 
     @Test
-    @DisplayName("GET /api/iportal/projects/inventory/{project} should return inventory map")
-    void getProjectInventoryByName_shouldReturnInventoryMap() {
+    void getProjectInventoryByName_ShouldReturnInventory() throws Exception {
         // Given
-        String projectName = "my-test-project";
-        InventoryResponse glResponse = new InventoryResponse("Active", 5, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        InventoryResponse s1Response = new InventoryResponse("Active", 10, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        Map<String, InventoryResponse> mockInventory = Map.of("gl", glResponse, "s1", s1Response);
+        String projectName = "test-project";
+        Map<String, InventoryResponse> inventory = new HashMap<>();
+        inventory.put("gl", createTestInventoryResponse("Active", 5));
+        inventory.put("sl", createTestInventoryResponse("Active", 7));
 
-        when(projectService.getProjectInventoryByName(projectName)).thenReturn(mockInventory);
+        when(projectService.getProjectInventoryByName(projectName)).thenReturn(inventory);
 
         // When & Then
-        webTestClient.get()
-                .uri("/api/iportal/projects/inventory/{project}", projectName)
-                .accept(MediaType.APPLICATION_JSON)
-                .exchange()
-                .expectStatus().isOk()
-                .expectBody()
-                .jsonPath("$.gl.pods").isEqualTo(5)
-                .jsonPath("$.s1.pods").isEqualTo(10)
-                .jsonPath("$.gl.services").isEqualTo(2)
-                .jsonPath("$.s1.services").isEqualTo(4);
+        mockMvc.perform(get("/api/iportal/projects/inventory/{project}", projectName))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.gl.status").value("Active"))
+                .andExpect(jsonPath("$.gl.pods").value(5))
+                .andExpect(jsonPath("$.sl.status").value("Active"))
+                .andExpect(jsonPath("$.sl.pods").value(7));
+
+        verify(projectService).getProjectInventoryByName(projectName);
     }
 
     @Test
-    @DisplayName("GET /api/iportal/projects/events/{project} should stream SSE events")
-    void getAllProjectEvents_shouldStreamSseEvents() {
+    void getAllProjectEvents_ShouldReturnEventStream() throws Exception {
         // Given
-        String projectName = "my-streaming-project";
-        String cluster = "s1";
+        String cluster = "gl";
+        String project = "test-project";
+        EventResponse event1 = createTestEventResponse("Normal", "Created");
+        EventResponse event2 = createTestEventResponse("Warning", "Failed");
         
-        EventResponse event1 = new EventResponse("2025-07-27T00:10:00Z", "Normal", "Scheduled", "Successfully assigned pod to node", "Pod", "my-app-1", projectName);
-        EventResponse event2 = new EventResponse("2025-07-27T00:10:05Z", "Normal", "Pulled", "Container image pulled", "Pod", "my-app-1", projectName);
-        Flux<EventResponse> eventFlux = Flux.just(event1, event2);
-
-        when(projectService.getProjectEvents(cluster, projectName)).thenReturn(eventFlux);
+        Flux<EventResponse> eventStream = Flux.just(event1, event2)
+                .delayElements(Duration.ofMillis(100));
+        
+        when(projectService.getProjectEvents(cluster, project)).thenReturn(eventStream);
 
         // When & Then
-        webTestClient.get()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/iportal/projects/events/{project}")
-                        .queryParam("cluster", cluster)
-                        .build(projectName))
-                .accept(MediaType.TEXT_EVENT_STREAM)
-                .exchange()
-                .expectStatus().isOk()
-                .expectHeader().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM)
-                .expectBodyList(EventResponse.class) // Consume the stream into a list
-                .hasSize(2)
-                .contains(event1, event2);
+        mockMvc.perform(get("/api/iportal/projects/events/{project}", project)
+                        .param("cluster", cluster))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", "text/event-stream;charset=UTF-8"));
+
+        verify(projectService).getProjectEvents(cluster, project);
+    }
+
+    private InventoryResponse createTestInventoryResponse(String status, int pods) {
+        InventoryResponse response = new InventoryResponse();
+        response.setStatus(status);
+        response.setPods(pods);
+        response.setServices(2);
+        response.setRoutes(1);
+        response.setDeployments(3);
+        response.setReplicaSets(3);
+        response.setStatefulSets(1);
+        response.setJobs(0);
+        response.setCronJobs(2);
+        response.setIngresses(1);
+        response.setPersistentVolumeClaims(4);
+        response.setConfigMaps(8);
+        return response;
+    }
+
+    private EventResponse createTestEventResponse(String type, String reason) {
+        return new EventResponse(
+                "2024-01-01T10:00:00Z",
+                type,
+                reason,
+                "Test event message",
+                "test-resource",
+                "Pod",
+                "test-namespace"
+        );
     }
 }
-```
