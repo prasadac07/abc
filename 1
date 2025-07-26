@@ -1,43 +1,13 @@
-Here's a complete **unit test** for the `ConfigMapServiceImpl` class you described.
-This test uses **JUnit 5** and **Mockito** to mock the `OpenShiftService` and simulate different ConfigMap scenarios across clusters `gl` and `sl`.
-
----
-
-### ✅ Prerequisites
-
-Add these dependencies in your `pom.xml` (if not already):
-
-```xml
-<dependency>
-    <groupId>org.mockito</groupId>
-    <artifactId>mockito-core</artifactId>
-    <version>5.11.0</version>
-    <scope>test</scope>
-</dependency>
-<dependency>
-    <groupId>org.junit.jupiter</groupId>
-    <artifactId>junit-jupiter</artifactId>
-    <version>5.10.0</version>
-    <scope>test</scope>
-</dependency>
-```
-
----
-
-### 🧪 Unit Test Code – `ConfigMapServiceImplTest.java`
-
-```java
 package com.barclays.iportalmonitoring.service.impl;
 
 import com.barclays.iportalmonitoring.model.ConfigMapResponse;
 import com.barclays.iportalmonitoring.service.OpenshiftService;
 import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ObjectMeta;
-import io.fabric8.openshift.client.OpenShiftClient;
 import io.fabric8.kubernetes.client.dsl.MixedOperation;
-import io.fabric8.kubernetes.client.dsl.Resource;
-import io.fabric8.kubernetes.client.dsl.Namespaceable;
 import io.fabric8.kubernetes.client.dsl.NonNamespaceOperation;
+import io.fabric8.kubernetes.client.dsl.Resource;
+import io.fabric8.openshift.client.OpenShiftClient;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,137 +19,115 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-public class ConfigMapServiceImplTest {
+class ConfigMapServiceImplTest {
 
     @Mock
-    private OpenshiftService openShiftService;
+    private OpenshiftService openshiftService;
 
     @Mock
-    private OpenShiftClient mockClient;
+    private OpenShiftClient openShiftClient;
 
     @Mock
     private MixedOperation<ConfigMap, ?, Resource<ConfigMap>> mixedOperation;
 
     @Mock
-    private Namespaceable<NonNamespaceOperation<ConfigMap, ?, Resource<ConfigMap>>> namespaceable;
-
-    @Mock
-    private NonNamespaceOperation<ConfigMap, ?, Resource<ConfigMap>> nonNamespaceOperation;
+    private NonNamespaceOperation<ConfigMap, ?, Resource<ConfigMap>> namespaceOperation;
 
     private ConfigMapServiceImpl configMapService;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        configMapService = new ConfigMapServiceImpl(openShiftService);
 
-        when(openShiftService.getActiveClient()).thenReturn(mockClient);
-        when(mockClient.configMaps()).thenReturn((MixedOperation) mixedOperation);
-        when(mixedOperation.inNamespace(anyString())).thenReturn((NonNamespaceOperation) nonNamespaceOperation);
+        when(openshiftService.getActiveClient()).thenReturn(openShiftClient);
+        when(openShiftClient.configMaps()).thenReturn(mixedOperation);
+        when(mixedOperation.inNamespace(anyString())).thenReturn(namespaceOperation);
+
+        configMapService = new ConfigMapServiceImpl(openshiftService);
     }
 
     private ConfigMap createConfigMap(String name, Map<String, String> labels) {
         ConfigMap configMap = new ConfigMap();
-        ObjectMeta meta = new ObjectMeta();
-        meta.setName(name);
-        meta.setLabels(labels);
-        configMap.setMetadata(meta);
+        ObjectMeta metadata = new ObjectMeta();
+        metadata.setName(name);
+        metadata.setLabels(labels);
+        configMap.setMetadata(metadata);
         return configMap;
     }
 
     @Test
-    void testCompareConfigMaps_SameLabels() {
-        String project = "test-project";
+    void testCompareConfigMaps_SameInBothClusters() {
+        List<ConfigMap> glList = List.of(createConfigMap("app-config", Map.of("env", "prod")));
+        List<ConfigMap> s1List = List.of(createConfigMap("app-config", Map.of("env", "prod")));
 
-        ConfigMap glMap = createConfigMap("my-config", Map.of("env", "prod"));
-        ConfigMap slMap = createConfigMap("my-config", Map.of("env", "prod"));
+        when(namespaceOperation.list()).thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(glList).build())  // for GL
+            .thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(s1List).build()); // for S1
 
-        when(nonNamespaceOperation.list().getItems())
-                .thenReturn(List.of(glMap))  // GL
-                .thenReturn(List.of(slMap)); // SL
-
-        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps("test");
 
         assertEquals(1, result.size());
-        ConfigMapResponse response = result.get("my-config");
+        ConfigMapResponse response = result.get("app-config");
         assertEquals("Available", response.getGl());
         assertEquals("Available", response.getS1());
-        assertTrue(((Map<?, ?>) response.getDifference()).get("info").equals("No differences found"));
+        assertEquals("No differences found", ((Map<?, ?>) response.getDifference()).get("info"));
     }
 
     @Test
     void testCompareConfigMaps_DifferentLabels() {
-        String project = "test-project";
+        List<ConfigMap> glList = List.of(createConfigMap("diff-config", Map.of("env", "prod")));
+        List<ConfigMap> s1List = List.of(createConfigMap("diff-config", Map.of("env", "dev")));
 
-        ConfigMap glMap = createConfigMap("my-config", Map.of("env", "prod"));
-        ConfigMap slMap = createConfigMap("my-config", Map.of("env", "dev"));
+        when(namespaceOperation.list()).thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(glList).build())  // for GL
+            .thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(s1List).build()); // for S1
 
-        when(nonNamespaceOperation.list().getItems())
-                .thenReturn(List.of(glMap))  // GL
-                .thenReturn(List.of(slMap)); // SL
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps("test");
 
-        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
-
-        assertEquals(1, result.size());
-        ConfigMapResponse response = result.get("my-config");
+        ConfigMapResponse response = result.get("diff-config");
         assertEquals("Available", response.getGl());
         assertEquals("Available", response.getS1());
 
         Map<?, ?> diff = (Map<?, ?>) response.getDifference();
-        assertTrue(diff.containsKey("glOnly") || diff.containsKey("s1Only") || diff.containsKey("differences"));
+        assertTrue(diff.containsKey("gl"));
+        assertTrue(diff.containsKey("s1"));
     }
 
     @Test
-    void testCompareConfigMaps_MissingInSL() {
-        String project = "test-project";
+    void testCompareConfigMaps_OnlyInGl() {
+        List<ConfigMap> glList = List.of(createConfigMap("gl-only", Map.of("app", "true")));
+        List<ConfigMap> s1List = List.of();
 
-        ConfigMap glMap = createConfigMap("only-in-gl", Map.of("env", "prod"));
+        when(namespaceOperation.list()).thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(glList).build())  // for GL
+            .thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(s1List).build()); // for S1
 
-        when(nonNamespaceOperation.list().getItems())
-                .thenReturn(List.of(glMap))  // GL
-                .thenReturn(Collections.emptyList()); // SL
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps("test");
 
-        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
-
-        ConfigMapResponse response = result.get("only-in-gl");
+        ConfigMapResponse response = result.get("gl-only");
         assertEquals("Available", response.getGl());
         assertEquals("Unavailable", response.getS1());
         assertEquals("ConfigMap Missing in one cluster", ((Map<?, ?>) response.getDifference()).get("info"));
     }
 
     @Test
-    void testCompareConfigMaps_MissingInGL() {
-        String project = "test-project";
+    void testCompareConfigMaps_OnlyInS1() {
+        List<ConfigMap> glList = List.of();
+        List<ConfigMap> s1List = List.of(createConfigMap("s1-only", Map.of("app", "false")));
 
-        ConfigMap slMap = createConfigMap("only-in-sl", Map.of("env", "dev"));
+        when(namespaceOperation.list()).thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(glList).build())  // for GL
+            .thenReturn(new io.fabric8.kubernetes.api.model.ConfigMapListBuilder()
+                .withItems(s1List).build()); // for S1
 
-        when(nonNamespaceOperation.list().getItems())
-                .thenReturn(Collections.emptyList())  // GL
-                .thenReturn(List.of(slMap)); // SL
+        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps("test");
 
-        Map<String, ConfigMapResponse> result = configMapService.compareConfigMaps(project);
-
-        ConfigMapResponse response = result.get("only-in-sl");
+        ConfigMapResponse response = result.get("s1-only");
         assertEquals("Unavailable", response.getGl());
         assertEquals("Available", response.getS1());
         assertEquals("ConfigMap Missing in one cluster", ((Map<?, ?>) response.getDifference()).get("info"));
     }
 }
-```
-
----
-
-### 📌 Notes:
-
-* This test mocks the behavior of both GL and SL clusters using `thenReturn(...)` for `.list().getItems()`.
-* The `createConfigMap(...)` helper sets metadata and labels.
-* It covers four test cases:
-
-  1. Same labels
-  2. Different labels
-  3. Missing in SL
-  4. Missing in GL
-
----
-
-Let me know if you also want to mock `MapUtils.diffStringMaps(...)` behavior explicitly or test edge cases like nulls.
