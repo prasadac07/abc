@@ -1,457 +1,97 @@
-// Unit Tests for ProjectServiceImpl
 package com.barclays.iportalmonitoring.service.impl;
 
-import com.barclays.iportalmonitoring.model.EventResponse;
-import com.barclays.iportalmonitoring.model.InventoryResponse;
-import com.barclays.iportalmonitoring.service.OpenShiftService;
-import com.barclays.iportalmonitoring.service.ProjectService;
-import com.barclays.iportalmonitoring.util.AlgorithmUtils;
-import io.fabric8.kubernetes.api.model.*;
-import io.fabric8.kubernetes.client.Watcher;
-import io.fabric8.openshift.api.model.Project;
-import io.fabric8.openshift.api.model.ProjectBuilder;
-import io.fabric8.openshift.api.model.ProjectStatus;
-import io.fabric8.openshift.client.OpenShiftClient;
+import com.barclays.iportalmonitoring.model.ConfigMapResponse;
+import com.barclays.iportalmonitoring.service.ConfigMapService;
+import com.barclays.iportalmonitoring.service.OpenshiftService;
+
+import io.fabric8.kubernetes.api.model.ConfigMap;
+import io.fabric8.kubernetes.api.model.ObjectMeta;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import reactor.core.publisher.Flux;
-import reactor.test.StepVerifier;
+import org.mockito.MockitoAnnotations;
 
-import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
 
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.*;
 
-@ExtendWith(MockitoExtension.class)
-class ProjectServiceImplTest {
+public class ConfigMapServiceImplTest {
 
     @Mock
-    private OpenShiftService openShiftService;
-    
+    private OpenshiftService openshiftService;
+
     @Mock
-    private ProjectService projectService;
-    
-    @Mock
-    private OpenShiftClient openShiftClient;
-    
-    private ProjectServiceImpl projectServiceImpl;
+    private ConfigMapService configMapService; // For recursive dependency
+
+    @InjectMocks
+    private ConfigMapServiceImpl configMapServiceImpl;
 
     @BeforeEach
     void setUp() {
-        projectServiceImpl = new ProjectServiceImpl(openShiftService, projectService);
+        MockitoAnnotations.openMocks(this);
+    }
+
+    private ConfigMap createConfigMap(String name, Map<String, String> labels) {
+        ConfigMap configMap = new ConfigMap();
+        ObjectMeta meta = new ObjectMeta();
+        meta.setName(name);
+        meta.setLabels(labels);
+        configMap.setMetadata(meta);
+        return configMap;
     }
 
     @Test
-    void getAllProjects_ShouldReturnProjectMap_WhenProjectsExist() {
-        // Given
-        String cluster = "gl";
-        Project project1 = createTestProject("project1", "Display Name 1");
-        Project project2 = createTestProject("project2", null);
-        
-        ProjectList projectList = new ProjectListBuilder()
-                .withItems(Arrays.asList(project1, project2))
-                .build();
-
-        when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
-        when(openShiftClient.projects()).thenReturn(mock(io.fabric8.openshift.client.dsl.ProjectResource.class));
-        when(openShiftClient.projects().list()).thenReturn(projectList);
-
-        // When
-        Map<String, String> result = projectServiceImpl.getAllProjects(cluster);
-
-        // Then
-        assertThat(result).hasSize(2);
-        assertThat(result).containsEntry("project1", "Display Name 1");
-        assertThat(result).containsEntry("project2", "project2");
-        
-        verify(openShiftService).getActiveClient();
-        verify(openShiftClient.projects()).list();
-    }
-
-    @Test
-    void getAllProjects_ShouldHandleEmptyProjectList() {
-        // Given
-        String cluster = "gl";
-        ProjectList emptyProjectList = new ProjectListBuilder().build();
-
-        when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
-        when(openShiftClient.projects()).thenReturn(mock(io.fabric8.openshift.client.dsl.ProjectResource.class));
-        when(openShiftClient.projects().list()).thenReturn(emptyProjectList);
-
-        // When
-        Map<String, String> result = projectServiceImpl.getAllProjects(cluster);
-
-        // Then
-        assertThat(result).isEmpty();
-    }
-
-    @Test
-    void getAllProjectsBothClusters_ShouldMergeProjectsFromBothClusters() {
-        // Given
-        Map<String, String> glProjects = Map.of("project1", "GL Project 1", "project2", "GL Project 2");
-        Map<String, String> slProjects = Map.of("project3", "SL Project 3", "project4", "SL Project 4");
-        List<String> mergedProjects = Arrays.asList("project1", "project2", "project3", "project4");
-
-        when(projectService.getAllProjects("gl")).thenReturn(glProjects);
-        when(projectService.getAllProjects("sl")).thenReturn(slProjects);
-        mockStatic(AlgorithmUtils.class);
-        when(AlgorithmUtils.mergeProjects(glProjects, slProjects)).thenReturn(mergedProjects);
-
-        // When
-        List<String> result = projectServiceImpl.getAllProjectsBothClusters();
-
-        // Then
-        assertThat(result).containsExactlyElementsOf(mergedProjects);
-        verify(projectService).getAllProjects("gl");
-        verify(projectService).getAllProjects("sl");
-    }
-
-    @Test
-    void getProjectInventoryByName_ShouldReturnInventoryFromBothClusters() {
-        // Given
-        String projectName = "test-project";
-        InventoryResponse glInventory = createTestInventoryResponse("Active", 5, 3);
-        InventoryResponse slInventory = createTestInventoryResponse("Active", 7, 4);
-
-        when(projectService.getInventoryForCluster("gl", projectName)).thenReturn(glInventory);
-        when(projectService.getInventoryForCluster("sl", projectName)).thenReturn(slInventory);
-
-        // When
-        Map<String, InventoryResponse> result = projectServiceImpl.getProjectInventoryByName(projectName);
-
-        // Then
-        assertThat(result).hasSize(2);
-        assertThat(result.get("gl")).isEqualTo(glInventory);
-        assertThat(result.get("sl")).isEqualTo(slInventory);
-    }
-
-    @Test
-    void getInventoryForCluster_ShouldReturnInventoryResponse_WhenProjectExists() {
-        // Given
-        String cluster = "gl";
-        String namespace = "test-namespace";
-        Project project = createTestProjectWithStatus("test-namespace", "Active");
-
-        when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
-        setupMockClientForInventory(namespace, project);
-
-        // When
-        InventoryResponse result = projectServiceImpl.getInventoryForCluster(cluster, namespace);
-
-        // Then
-        assertThat(result).isNotNull();
-        assertThat(result.getStatus()).isEqualTo("Active");
-        assertThat(result.getPods()).isEqualTo(2);
-        assertThat(result.getServices()).isEqualTo(1);
-        verify(openShiftService).getActiveClient();
-    }
-
-    @Test
-    void getInventoryForCluster_ShouldThrowException_WhenClientIsNull() {
-        // Given
-        String cluster = "gl";
-        String namespace = "test-namespace";
-        when(openShiftService.getActiveClient()).thenReturn(null);
-
-        // When & Then
-        assertThatThrownBy(() -> projectServiceImpl.getInventoryForCluster(cluster, namespace))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessage("OpenShift client is null");
-    }
-
-    @Test
-    void getProjectEvents_ShouldReturnFluxOfEvents() {
-        // Given
-        String cluster = "gl";
+    void testCompareConfigMaps_bothClustersHaveSameConfigMapWithSameLabels() {
         String project = "test-project";
-        Event testEvent = createTestEvent();
 
-        when(openShiftService.getActiveClient()).thenReturn(openShiftClient);
-        setupMockClientForEvents(project);
+        ConfigMap cm1 = createConfigMap("config1", Map.of("key1", "value1"));
 
-        // When
-        Flux<EventResponse> result = projectServiceImpl.getProjectEvents(cluster, project);
+        when(configMapService.getConfigMapsFromCluster("gl", project)).thenReturn(List.of(cm1));
+        when(configMapService.getConfigMapsFromCluster("sl", project)).thenReturn(List.of(cm1));
 
-        // Then
-        StepVerifier.create(result)
-                .expectNextMatches(eventResponse -> 
-                    eventResponse.getResourceKind().equals("Pod") &&
-                    eventResponse.getResourceName().equals("test-pod") &&
-                    eventResponse.getType().equals("Normal"))
-                .thenCancel()
-                .verify(Duration.ofSeconds(5));
+        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(project);
+
+        ConfigMapResponse response = result.get("config1");
+        assertEquals("Available", response.getGl());
+        assertEquals("Available", response.getS1());
+        assertEquals("No differences found", response.getDifference().get("info"));
     }
 
     @Test
-    void getProjectEvents_ShouldThrowException_WhenClientIsNull() {
-        // Given
-        String cluster = "gl";
+    void testCompareConfigMaps_configMapMissingInOneCluster() {
         String project = "test-project";
-        when(openShiftService.getActiveClient()).thenReturn(null);
 
-        // When & Then
-        assertThatThrownBy(() -> projectServiceImpl.getProjectEvents(cluster, project))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessage("OpenShift client is null");
-    }
+        ConfigMap cm1 = createConfigMap("config1", Map.of("key1", "value1"));
 
-    // Helper methods
-    private Project createTestProject(String name, String displayName) {
-        Map<String, String> annotations = new HashMap<>();
-        if (displayName != null) {
-            annotations.put("openshift.io/display-name", displayName);
-        }
-        
-        return new ProjectBuilder()
-                .withNewMetadata()
-                    .withName(name)
-                    .withAnnotations(annotations)
-                .endMetadata()
-                .build();
-    }
+        when(configMapService.getConfigMapsFromCluster("gl", project)).thenReturn(List.of(cm1));
+        when(configMapService.getConfigMapsFromCluster("sl", project)).thenReturn(List.of());
 
-    private Project createTestProjectWithStatus(String name, String phase) {
-        return new ProjectBuilder()
-                .withNewMetadata()
-                    .withName(name)
-                .endMetadata()
-                .withNewStatus()
-                    .withPhase(phase)
-                .endStatus()
-                .build();
-    }
+        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(project);
 
-    private InventoryResponse createTestInventoryResponse(String status, int pods, int services) {
-        InventoryResponse response = new InventoryResponse();
-        response.setStatus(status);
-        response.setPods(pods);
-        response.setServices(services);
-        response.setRoutes(1);
-        response.setDeployments(2);
-        response.setReplicaSets(2);
-        response.setStatefulSets(0);
-        response.setJobs(0);
-        response.setCronJobs(1);
-        response.setIngresses(1);
-        response.setPersistentVolumeClaims(2);
-        response.setConfigMaps(5);
-        return response;
-    }
-
-    private Event createTestEvent() {
-        return new EventBuilder()
-                .withNewMetadata()
-                    .withName("test-event")
-                    .withNamespace("test-project")
-                .endMetadata()
-                .withType("Normal")
-                .withReason("Created")
-                .withMessage("Pod created successfully")
-                .withNewInvolvedObject()
-                    .withKind("Pod")
-                    .withName("test-pod")
-                    .withNamespace("test-project")
-                .endInvolvedObject()
-                .withLastTimestamp("2024-01-01T10:00:00Z")
-                .build();
-    }
-
-    private void setupMockClientForInventory(String namespace, Project project) {
-        // Mock project retrieval
-        var projectResource = mock(io.fabric8.openshift.client.dsl.ProjectResource.class);
-        when(openShiftClient.projects()).thenReturn(projectResource);
-        when(projectResource.withName(namespace)).thenReturn(mock(io.fabric8.openshift.client.dsl.ProjectResource.class));
-        when(projectResource.withName(namespace).get()).thenReturn(project);
-
-        // Mock resource counting
-        setupResourceCountMocks(namespace);
-    }
-
-    private void setupResourceCountMocks(String namespace) {
-        // Mock pods
-        var podList = new PodListBuilder()
-                .withItems(Arrays.asList(new PodBuilder().build(), new PodBuilder().build()))
-                .build();
-        when(openShiftClient.pods().inNamespace(namespace).list()).thenReturn(podList);
-
-        // Mock services
-        var serviceList = new ServiceListBuilder()
-                .withItems(Arrays.asList(new ServiceBuilder().build()))
-                .build();
-        when(openShiftClient.services().inNamespace(namespace).list()).thenReturn(serviceList);
-
-        // Add similar mocks for other resources (routes, deployments, etc.)
-        // This is a simplified version - in production, mock all resource types
-    }
-
-    private void setupMockClientForEvents(String project) {
-        var eventResource = mock(io.fabric8.kubernetes.client.dsl.FilterWatchListDeletable.class);
-        var namespacedEventResource = mock(io.fabric8.kubernetes.client.dsl.FilterWatchListDeletable.class);
-        var watchable = mock(io.fabric8.kubernetes.client.Watchable.class);
-        var watch = mock(io.fabric8.kubernetes.client.Watch.class);
-
-        when(openShiftClient.v1()).thenReturn(mock(io.fabric8.kubernetes.client.dsl.V1APIGroupDSL.class));
-        when(openShiftClient.v1().events()).thenReturn(eventResource);
-        when(eventResource.inNamespace(project)).thenReturn(namespacedEventResource);
-        when(namespacedEventResource.watch(any(Watcher.class))).thenReturn(watch);
-    }
-}
-
-// Unit Tests for ProjectController
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.model.EventResponse;
-import com.barclays.iportalmonitoring.model.InventoryResponse;
-import com.barclays.iportalmonitoring.service.ProjectService;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import reactor.core.publisher.Flux;
-
-import java.time.Duration;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
-
-@WebMvcTest(ProjectController.class)
-class ProjectControllerTest {
-
-    @Autowired
-    private MockMvc mockMvc;
-
-    @MockBean
-    private ProjectService projectService;
-
-    @Autowired
-    private ObjectMapper objectMapper;
-
-    @Test
-    void getAllProjects_ShouldReturnProjectMap_WhenClusterSpecified() throws Exception {
-        // Given
-        String cluster = "gl";
-        Map<String, String> projects = Map.of(
-                "project1", "Display Name 1",
-                "project2", "Display Name 2"
-        );
-        when(projectService.getAllProjects(cluster)).thenReturn(projects);
-
-        // When & Then
-        mockMvc.perform(get("/api/iportal/projects")
-                        .param("cluster", cluster))
-                .andExpect(status().isOk())
-                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.project1").value("Display Name 1"))
-                .andExpect(jsonPath("$.project2").value("Display Name 2"));
-
-        verify(projectService).getAllProjects(cluster);
+        ConfigMapResponse response = result.get("config1");
+        assertEquals("Available", response.getGl());
+        assertEquals("Unavailable", response.getS1());
+        assertEquals("ConfigMap Missing in one cluster", response.getDifference().get("info"));
     }
 
     @Test
-    void getAllProjects_ShouldReturnMergedProjects_WhenClusterIsBoth() throws Exception {
-        // Given
-        List<String> projects = Arrays.asList("project1", "project2", "project3");
-        when(projectService.getAllProjectsBothClusters()).thenReturn(projects);
-
-        // When & Then
-        mockMvc.perform(get("/api/iportal/projects")
-                        .param("cluster", "both"))
-                .andExpect(status().isOk())
-                .andExpected(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$[0]").value("project1"))
-                .andExpect(jsonPath("$[1]").value("project2"))
-                .andExpect(jsonPath("$[2]").value("project3"));
-
-        verify(projectService).getAllProjectsBothClusters();
-    }
-
-    @Test
-    void getProjectInventoryByName_ShouldReturnInventory() throws Exception {
-        // Given
-        String projectName = "test-project";
-        Map<String, InventoryResponse> inventory = new HashMap<>();
-        inventory.put("gl", createTestInventoryResponse("Active", 5));
-        inventory.put("sl", createTestInventoryResponse("Active", 7));
-
-        when(projectService.getProjectInventoryByName(projectName)).thenReturn(inventory);
-
-        // When & Then
-        mockMvc.perform(get("/api/iportal/projects/inventory/{project}", projectName))
-                .andExpect(status().isOk())
-                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.gl.status").value("Active"))
-                .andExpect(jsonPath("$.gl.pods").value(5))
-                .andExpect(jsonPath("$.sl.status").value("Active"))
-                .andExpect(jsonPath("$.sl.pods").value(7));
-
-        verify(projectService).getProjectInventoryByName(projectName);
-    }
-
-    @Test
-    void getAllProjectEvents_ShouldReturnEventStream() throws Exception {
-        // Given
-        String cluster = "gl";
+    void testCompareConfigMaps_configMapHasDifferentLabels() {
         String project = "test-project";
-        EventResponse event1 = createTestEventResponse("Normal", "Created");
-        EventResponse event2 = createTestEventResponse("Warning", "Failed");
-        
-        Flux<EventResponse> eventStream = Flux.just(event1, event2)
-                .delayElements(Duration.ofMillis(100));
-        
-        when(projectService.getProjectEvents(cluster, project)).thenReturn(eventStream);
 
-        // When & Then
-        mockMvc.perform(get("/api/iportal/projects/events/{project}", project)
-                        .param("cluster", cluster))
-                .andExpect(status().isOk())
-                .andExpect(header().string("Content-Type", "text/event-stream;charset=UTF-8"));
+        ConfigMap glMap = createConfigMap("config1", Map.of("key1", "value1"));
+        ConfigMap slMap = createConfigMap("config1", Map.of("key1", "value2"));
 
-        verify(projectService).getProjectEvents(cluster, project);
-    }
+        when(configMapService.getConfigMapsFromCluster("gl", project)).thenReturn(List.of(glMap));
+        when(configMapService.getConfigMapsFromCluster("sl", project)).thenReturn(List.of(slMap));
 
-    private InventoryResponse createTestInventoryResponse(String status, int pods) {
-        InventoryResponse response = new InventoryResponse();
-        response.setStatus(status);
-        response.setPods(pods);
-        response.setServices(2);
-        response.setRoutes(1);
-        response.setDeployments(3);
-        response.setReplicaSets(3);
-        response.setStatefulSets(1);
-        response.setJobs(0);
-        response.setCronJobs(2);
-        response.setIngresses(1);
-        response.setPersistentVolumeClaims(4);
-        response.setConfigMaps(8);
-        return response;
-    }
+        Map<String, ConfigMapResponse> result = configMapServiceImpl.compareConfigMaps(project);
 
-    private EventResponse createTestEventResponse(String type, String reason) {
-        return new EventResponse(
-                "2024-01-01T10:00:00Z",
-                type,
-                reason,
-                "Test event message",
-                "test-resource",
-                "Pod",
-                "test-namespace"
-        );
+        ConfigMapResponse response = result.get("config1");
+        assertEquals("Available", response.getGl());
+        assertEquals("Available", response.getS1());
+        assertEquals(false, response.getDifference().isEmpty());
     }
 }
