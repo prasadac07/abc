@@ -1,576 +1,230 @@
-package com.barclays.iportalmonitoring.model;
+Of course. To achieve robust, industry-level testing for your application, you should write both **Unit Tests** for your service logic and **Integration Tests** for your API controllers.
 
-import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.Data;
+Here is a complete testing suite for your `ProjectServiceImpl` and `ProjectController`.
 
-@Data
-@Schema(description = "Represents the health status of a single container within a deployment.")
-public class HealthCheckResponse {
+-----
 
-    @Schema(description = "The name of the deployment.", example = "frontend-v1")
-    private String deployment;
+### Dependencies
 
-    @Schema(description = "The name of a running pod for this deployment.", example = "frontend-v1-abcdef-12345")
-    private String podName;
+Ensure your `pom.xml` has the necessary testing dependencies. The `reactor-test` dependency is crucial for testing the reactive `Flux` stream.
 
-    @Schema(description = "The name of the container.", example = "frontend-container")
-    private String container;
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>io.projectreactor</groupId>
+    <artifactId>reactor-test</artifactId>
+    <scope>test</scope>
+</dependency>
+```
 
-    @Schema(description = "The service associated with the deployment.", example = "frontend-svc")
-    private String service;
+-----
 
-    @Schema(description = "The public URL for the application.", example = "https://shop.example.com")
-    private String route;
+### 1\. Unit Testing the Service (`ProjectServiceImpl`)
 
-    @Schema(description = "The path for the liveness probe.", example = "/healthz")
-    private String livenessPath;
+This class tests the core logic of your service in complete isolation using **Mockito** to fake the OpenShift connection.
 
-    @Schema(description = "The live status from the liveness probe.", example = "200 OK")
-    private String livenessStatus;
+**`ProjectServiceImplTest.java`**
 
-    @Schema(description = "The path for the readiness probe.", example = "/readyz")
-    private String readinessPath;
+```java
+package com.barclays.iportalmonitoring.service.Impl;
 
-    @Schema(description = "The live status from the readiness probe.", example = "200 OK")
-    private String readinessStatus;
+import com.barclays.iportalmonitoring.model.EventResponse;
+import com.barclays.iportalmonitoring.model.InventoryResponse;
+import com.barclays.iportalmonitoring.service.OpenshiftService;
+import com.barclays.iportalmonitoring.service.ProjectService;
+import io.fabric8.kubernetes.api.model.Event;
+import io.fabric8.kubernetes.client.Watcher;
+import io.fabric8.openshift.api.model.Project;
+import io.fabric8.openshift.client.OpenShiftClient;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Answers;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.stubbing.Answer;
+import reactor.core.publisher.Flux;
+import reactor.test.StepVerifier;
+
+import java.util.Collections;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class ProjectServiceImplTest {
+
+    @Mock
+    private OpenshiftService openshiftService;
+
+    // Mock the ProjectService interface to handle the self-injection pattern
+    @Mock
+    private ProjectService selfInjectedProjectService;
+
+    // Use deep stubs for the fluent OpenShift client API
+    @Mock(answer = Answers.RETURNS_DEEP_STUBS)
+    private OpenShiftClient mockClient;
+
+    @InjectMocks
+    private ProjectServiceImpl projectServiceImpl;
+
+    @BeforeEach
+    void setUp() {
+        // This setup runs before each test
+        when(openshiftService.getActiveClient()).thenReturn(mockClient);
+    }
+
+    @Test
+    void getInventoryForCluster_shouldAggregateResourceCounts() {
+        // Arrange
+        Project mockProject = mock(Project.class, RETURNS_DEEP_STUBS);
+        when(mockClient.projects().withName(anyString()).get()).thenReturn(mockProject);
+        when(mockProject.getStatus().getPhase()).thenReturn("Active");
+        // Mock resource counts
+        when(mockClient.pods().inNamespace(anyString()).list().getItems()).thenReturn(Collections.nCopies(5, null));
+        when(mockClient.services().inNamespace(anyString()).list().getItems()).thenReturn(Collections.nCopies(3, null));
+        when(mockClient.routes().inNamespace(anyString()).list().getItems()).thenReturn(Collections.nCopies(2, null));
+        // Assume other counts are 0
+        when(mockClient.apps().deployments().inNamespace(anyString()).list().getItems()).thenReturn(Collections.emptyList());
+
+        // Act
+        InventoryResponse response = projectServiceImpl.getInventoryForCluster("gl", "test-project");
+
+        // Assert
+        assertNotNull(response);
+        assertEquals("Active", response.getStatus());
+        assertEquals(5, response.getPods());
+        assertEquals(3, response.getServices());
+        assertEquals(2, response.getRoutes());
+        assertEquals(0, response.getDeployments());
+    }
+
+    @Test
+    void getProjectEvents_shouldStreamEventsReactively() {
+        // Arrange
+        Event mockEvent = new Event();
+        mockEvent.setReason("Scheduled");
+        mockEvent.setMessage("Pod scheduled successfully");
+        mockEvent.setLastTimestamp("2025-07-27T00:00:00Z");
+        mockEvent.setInvolvedObject(new io.fabric8.kubernetes.api.model.ObjectReference());
+
+        // Use Mockito's Answer to simulate the Watcher callback
+        when(mockClient.v1().events().inNamespace(anyString()).watch(any(Watcher.class)))
+            .thenAnswer((Answer<Void>) invocation -> {
+                Watcher<Event> watcher = invocation.getArgument(0);
+                watcher.eventReceived(Watcher.Action.ADDED, mockEvent);
+                watcher.onClose(null); // Simulate the watch closing to complete the Flux
+                return null;
+            });
+
+        // Act
+        Flux<EventResponse> eventFlux = projectServiceImpl.getProjectEvents("gl", "test-project");
+
+        // Assert: Use StepVerifier to test the reactive stream
+        StepVerifier.create(eventFlux)
+                .expectNextMatches(eventResponse -> "Scheduled".equals(eventResponse.getReason()))
+                .verifyComplete();
+    }
 }
+```
 
+-----
 
+### 2\. Integration Testing the Controller (`ProjectController`)
+
+This class tests your API endpoints by running a mock version of your application. The service layer is mocked with `@MockBean` to ensure no external calls are made.
+
+**`ProjectControllerTest.java`**
+
+```java
 package com.barclays.iportalmonitoring.controller;
 
-import com.barclays.iportalmonitoring.model.HealthCheckResponse;
-import com.barclays.iportalmonitoring.service.HealthCheckService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import com.barclays.iportalmonitoring.model.EventResponse;
+import com.barclays.iportalmonitoring.model.InventoryResponse;
+import com.barclays.iportalmonitoring.service.ProjectService;
+import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.Map;
 
-@RestController
-@RequestMapping("api/iportal/healthcheck")
-@CrossOrigin
-@Tag(name = "HealthCheck API", description = "Endpoints for performing live health checks on deployments.")
-public class HealthCheckController {
+import static org.mockito.Mockito.when;
 
-    private final HealthCheckService healthCheckService;
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureWebTestClient
+class ProjectControllerTest {
 
     @Autowired
-    public HealthCheckController(HealthCheckService healthCheckService) {
-        this.healthCheckService = healthCheckService;
+    private WebTestClient webTestClient;
+
+    @MockBean
+    private ProjectService mockProjectService;
+
+    @Test
+    void getAllProjects_whenClusterIsBoth_returnsListOfStrings() {
+        // Arrange
+        when(mockProjectService.getAllProjectsBothClusters()).thenReturn(List.of("Project-A", "Project-B"));
+
+        // Act & Assert
+        webTestClient.get()
+                .uri("/api/iportal/projects?cluster=both")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBodyList(String.class)
+                .hasSize(2)
+                .contains("Project-A", "Project-B");
     }
 
-    @Operation(summary = "Perform a health check on all deployments in a project")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully performed the health check."),
-        @ApiResponse(responseCode = "404", description = "Project not found.")
-    })
-    @GetMapping("/{project}")
-    public ResponseEntity<List<HealthCheckResponse>> healthCheck(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "The target cluster (e.g., 'gl', 'sl').") @RequestParam("cluster") String cluster) {
+    @Test
+    void getProjectInventoryByName_shouldReturnInventoryMap() {
+        // Arrange
+        InventoryResponse glInventory = new InventoryResponse();
+        glInventory.setStatus("Active");
+        glInventory.setPods(10);
+        when(mockProjectService.getProjectInventoryByName("test-project"))
+                .thenReturn(Map.of("gl", glInventory));
 
-        List<HealthCheckResponse> result = healthCheckService.checkDeploymentHealth(cluster, project);
-        return ResponseEntity.ok(result);
-    }
-}
-
-
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.service.ResourceQuotaService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
-
-@RestController
-@RequestMapping("/api/iportal/resource-quotas")
-@Tag(name = "ResourceQuotas API", description = "Endpoints for comparing ResourceQuotas across clusters.")
-public class ResourceQuotaController {
-
-    private final ResourceQuotaService resourceQuotaService;
-
-    @Autowired
-    public ResourceQuotaController(ResourceQuotaService resourceQuotaService) {
-        this.resourceQuotaService = resourceQuotaService;
+        // Act & Assert
+        webTestClient.get()
+                .uri("/api/iportal/projects/inventory/test-project?cluster=both")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.gl.status").isEqualTo("Active")
+                .jsonPath("$.gl.pods").isEqualTo(10);
     }
 
-    @Operation(summary = "Compare ResourceQuotas in a project across two clusters")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved the comparison results."),
-        @ApiResponse(responseCode = "404", description = "Project not found.")
-    })
-    @GetMapping("/{project}")
-    public ResponseEntity<Map<String, Map<String, Object>>> getResourceQuotas(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable("project") String project) {
-        // The cluster parameter was unused, so it has been removed for clarity.
-        // The service 'compareResourceQuotas' handles comparison across both clusters.
-        return ResponseEntity.ok(resourceQuotaService.compareResourceQuotas(project));
-    }
-}
+    @Test
+    void getAllProjectEvents_shouldStreamSseEvents() {
+        // Arrange
+        EventResponse event1 = new EventResponse();
+        event1.setReason("Started");
+        when(mockProjectService.getProjectEvents("gl", "test-project"))
+                .thenReturn(Flux.just(event1));
 
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.model.ConfigMapResponse;
-import com.barclays.iportalmonitoring.service.ConfigMapService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
-
-@RestController
-@RequestMapping("/api/iportal/configmaps")
-@Tag(name = "ConfigMaps API", description = "Endpoints for comparing ConfigMaps across clusters.")
-public class ConfigMapController {
-
-    private final ConfigMapService configMapService;
-
-    public ConfigMapController(ConfigMapService configMapService) {
-        this.configMapService = configMapService;
-    }
-
-    @Operation(summary = "Compare all ConfigMaps in a project across two clusters")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved the comparison results."),
-        @ApiResponse(responseCode = "404", description = "Project not found.")
-    })
-    @GetMapping("/{project}")
-    public ResponseEntity<Map<String, ConfigMapResponse>> compareConfigMaps(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable("project") String project) {
-
-        Map<String, ConfigMapResponse> response = configMapService.compareConfigMaps(project);
-        return ResponseEntity.ok(response);
+        // Act & Assert
+        webTestClient.get()
+                .uri("/api/iportal/projects/events/test-project?cluster=gl")
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM)
+                .expectBodyList(EventResponse.class)
+                .hasSize(1);
     }
 }
-
-package com.barclays.iportalmonitoring.model;
-
-import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor
-@Schema(description = "Represents the comparison result of a ConfigMap between two clusters.")
-public class ConfigMapResponse {
-
-    @Schema(description = "The status of the ConfigMap in the 'gl' cluster.", example = "Exists")
-    private String gl;
-
-    @Schema(description = "The status of the ConfigMap in the 'sl' cluster.", example = "Missing")
-    private String sl;
-
-    @Schema(description = "An object detailing the differences if both exist but are not identical, or an info message.")
-    private Object difference;
-}
-
-
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.service.RouteService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.web.bind.annotation.*;
-
-@RestController
-@RequestMapping("/api/iportal/routes")
-@Tag(name = "Routes API", description = "Endpoints for retrieving information about routes.")
-public class RouteController {
-
-    private final RouteService routeService;
-
-    public RouteController(RouteService routeService) {
-        this.routeService = routeService;
-    }
-
-    @Operation(
-        summary = "Get route details for a project",
-        description = "Returns detailed data for all routes. If cluster='both', returns a map of data for both clusters. Otherwise, returns a list for the specified cluster."
-    )
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved route details."),
-        @ApiResponse(responseCode = "404", description = "Project not found.")
-    })
-    @GetMapping("/{project}")
-    public Object getRoutes(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "Specify the cluster ('gl', 'sl') or 'both'.") @RequestParam("cluster") String cluster) {
-
-        if ("both".equalsIgnoreCase(cluster)) {
-            return routeService.getRouteDetailsBothClusters(project);
-        }
-        return routeService.getRouteDetailsFromCluster(cluster, project);
-    }
-}
-
-
-package com.barclays.iportalmonitoring.model;
-
-import io.fabric8.openshift.api.model.RoutePort;
-import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor
-@Schema(description = "Represents detailed information about an OpenShift Route.")
-public class RouteResponse {
-
-    @Schema(description = "The unique name of the route.", example = "my-app-route")
-    private String routeName;
-
-    @Schema(description = "The publicly accessible hostname for the route.", example = "my-app.example.com")
-    private String host;
-
-    @Schema(description = "The optional path for the route.", example = "/api")
-    private String path;
-
-    @Schema(description = "The timestamp when the route was created.", example = "2025-07-26T12:00:00Z")
-    private String createdAt;
-
-    @Schema(description = "The name of the service that the route directs traffic to.", example = "my-app-service")
-    private String toService;
-
-    @Schema(description = "The target port on the service that the route forwards traffic to.")
-    private RoutePort port; // Note: 'ports' was renamed to 'port' for clarity as RouteSpec has one port
-
-    @Schema(description = "TLS termination policy for the route (e.g., 'edge', 'passthrough').", example = "edge")
-    private String tls;
-}
-
-
-package com.barclays.iportalmonitoring.model;
-
-import io.fabric8.kubernetes.api.model.ServicePort;
-import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-import java.util.List;
-import java.util.Map;
-
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor
-@Schema(description = "Represents detailed information about an OpenShift/Kubernetes Service.")
-public class ServiceResponse {
-
-    @Schema(description = "The unique name of the service.", example = "my-app-service")
-    private String serviceName;
-
-    @Schema(description = "The timestamp when the service was created.", example = "2025-07-26T12:00:00Z")
-    private String createdAt;
-
-    @Schema(description = "The session affinity policy used by this service.", example = "None")
-    private String sessionAffinity;
-
-    @Schema(description = "The type of service.", example = "ClusterIP")
-    private String type;
-
-    @Schema(description = "The internal IP address assigned to the service.", example = "172.30.1.100")
-    private String clusterIP;
-
-    @Schema(description = "A map of key-value labels applied to the service.")
-    private Map<String, String> labels;
-
-    @Schema(description = "A map of key-value selectors used by the service to find target pods.")
-    private Map<String, String> selector;
-
-    @Schema(description = "A list of ports exposed by the service.")
-    private List<ServicePort> ports;
-}
-
-
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.model.PodResponse;
-import com.barclays.iportalmonitoring.service.OpenShiftServiceMonitor;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
-
-@RestController
-@RequestMapping("/api/iportal/services")
-@Tag(name = "Services API", description = "Endpoints for retrieving information about services and their associated pods.")
-public class ServiceController {
-
-    private final OpenShiftServiceMonitor openshiftServiceMonitor;
-
-    public ServiceController(OpenShiftServiceMonitor openshiftServiceMonitor) {
-        this.openshiftServiceMonitor = openshiftServiceMonitor;
-    }
-
-    @Operation(
-        summary = "Get service details for a project",
-        description = "Returns detailed data for all services. If cluster='both', returns a map of data for both clusters. Otherwise, returns a list for the specified cluster."
-    )
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved service details."),
-        @ApiResponse(responseCode = "404", description = "Project not found.")
-    })
-    @GetMapping("/{project}")
-    public Object getServicesDataInProject(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "Specify the cluster ('gl', 'sl') or 'both'.") @RequestParam("cluster") String cluster) {
-        
-        if ("both".equalsIgnoreCase(cluster)) {
-            return openshiftServiceMonitor.getServiceDetailsBothClusters(project);
-        }
-        return openshiftServiceMonitor.getServiceDetailsFromCluster(cluster, project);
-    }
-
-    @Operation(summary = "Get pods managed by a service", description = "Returns a list of pods that are selected by a specific service.")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved the list of pods."),
-        @ApiResponse(responseCode = "404", description = "Service or project not found.")
-    })
-    @GetMapping("/pods/{serviceName}/{project}")
-    public Map<String, PodResponse> getPodsOfService(
-            @Parameter(description = "The name of the service.") @PathVariable String serviceName,
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "The target cluster (e.g., 'gl', 'sl').") @RequestParam("cluster") String cluster) {
-        
-        return openshiftServiceMonitor.getPodsOfService(cluster, project, serviceName);
-    }
-}
-
-package com.barclays.iportalmonitoring.model;
-
-import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor
-@Schema(description = "Status of a single container within a pod.")
-public class ContainerResponse {
-
-    @Schema(description = "The unique ID of the container runtime.", example = "cri-o://abcdef12345...")
-    private String containerId;
-
-    @Schema(description = "Indicates if the container process has started.", example = "true")
-    private boolean isStarted;
-
-    @Schema(description = "Indicates if the container has passed its readiness probe.", example = "true")
-    private boolean ready;
-
-    @Schema(description = "The timestamp when the container last started.", example = "2025-07-26T10:01:00Z")
-    private String startedAt;
-
-    @Schema(description = "The number of times the container has been restarted.", example = "0")
-    private int restartCount;
-
-    @Schema(description = "The current state of the container (e.g., 'running', 'terminated').", example = "running")
-    private String state;
-
-    @Schema(description = "The reason for the container's current state.", example = "Started")
-    private String stateReason;
-}
-
-package com.barclays.iportalmonitoring.model;
-
-import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import java.util.List;
-
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor
-@Schema(description = "Detailed information about a single pod.")
-public class PodResponse {
-
-    @Schema(description = "The unique name of the pod.", example = "frontend-deployment-v2-abcde-fghij")
-    private String podName;
-
-    @Schema(description = "The timestamp when the pod was started.", example = "2025-07-26T10:00:00Z")
-    private String startTime;
-
-    @Schema(description = "The current lifecycle phase of the pod.", example = "Running")
-    private String podPhase;
-
-    @Schema(description = "The name of the node where the pod is scheduled.", example = "node-1.compute.internal")
-    private String nodeName;
-
-    @Schema(description = "The internal IP address of the pod.", example = "10.128.0.5")
-    private String podIp;
-
-    @Schema(description = "The IP address of the host node.", example = "192.168.1.101")
-    private String hostIp;
-
-    @Schema(description = "A list of containers running within the pod.")
-    private List<ContainerResponse> containers;
-}
-
-
-package com.barclays.iportalmonitoring.model;
-
-import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import java.util.Map;
-
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor
-@Schema(description = "Detailed information about a single deployment.")
-public class DeploymentResponse {
-
-    @Schema(description = "The name of the deployment.", example = "frontend-deployment-v2")
-    private String name;
-
-    @Schema(description = "The current health status of the deployment (e.g., 'Healthy', 'Degraded').", example = "Healthy")
-    private String healthStatus;
-
-    @Schema(description = "The CPU limit configured for the containers.", example = "500m")
-    private String cpuLimit;
-
-    @Schema(description = "The CPU request configured for the containers.", example = "250m")
-    private String cpuRequest;
-
-    @Schema(description = "The memory limit configured for the containers.", example = "1Gi")
-    private String memoryLimit;
-
-    @Schema(description = "The memory request configured for the containers.", example = "512Mi")
-    private String memoryRequest;
-
-    @Schema(description = "The source code branch name, often from an annotation.", example = "feature/new-login")
-    private String branchName;
-
-    @Schema(description = "The tag of the container image being used.", example = "latest")
-    private String imageTag;
-
-    @Schema(description = "The deployment strategy type.", example = "RollingUpdate")
-    private String strategyType;
-
-    @Schema(description = "A map of key-value labels applied to the deployment.")
-    private Map<String, String> labels;
-}
-
-
-package com.barclays.iportalmonitoring.controller;
-
-import com.barclays.iportalmonitoring.model.PodResponse;
-import com.barclays.iportalmonitoring.service.DeploymentService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
-import java.util.Map;
-
-@RestController
-@RequestMapping("/api/portal/deployments")
-@Tag(name = "Deployments API", description = "Endpoints for retrieving information about deployments and pods.")
-public class DeploymentController {
-
-    private final DeploymentService deploymentService;
-
-    public DeploymentController(DeploymentService deploymentService) {
-        this.deploymentService = deploymentService;
-    }
-
-    @Operation(summary = "Get all deployment names in a project")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved deployment names."),
-        @ApiResponse(responseCode = "404", description = "Project not found.")
-    })
-    @GetMapping("/{project}")
-    public List<String> getDeploymentsInProject(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "The target cluster (e.g., 'gl', 'sl').") @RequestParam("cluster") String cluster) {
-        return deploymentService.getDeploymentsInProject(cluster, project);
-    }
-
-    @Operation(summary = "Get pods for a specific deployment")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved pod information."),
-        @ApiResponse(responseCode = "404", description = "Deployment or project not found.")
-    })
-    @GetMapping("/pods/{deploymentName}/{project}")
-    public Map<String, PodResponse> getPodsOfDeployment(
-            @Parameter(description = "The name of the deployment.") @PathVariable String deploymentName,
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "The target cluster (e.g., 'gl', 'sl').") @RequestParam("cluster") String cluster) {
-        return deploymentService.getPodsOfDeployment(cluster, project, deploymentName);
-    }
-
-    @Operation(
-        summary = "Get detailed data for deployments in a project",
-        description = "Returns detailed data for all deployments. If cluster='both', returns a map of data for both clusters. Otherwise, returns a list for the specified cluster."
-    )
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved deployment data."),
-        @ApiResponse(responseCode = "404", description = "Project not found.")
-    })
-    @GetMapping("/data/{project}")
-    public Object getDeploymentsDataInProject(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "Specify the cluster ('gl', 'sl') or 'both'.") @RequestParam("cluster") String cluster) {
-        if (cluster.equals("both")) {
-            return deploymentService.getDeploymentsDataBothClusters(project);
-        }
-        return deploymentService.getDeploymentsDataInProject(cluster, project);
-    }
-
-    @Operation(summary = "Get logs from a specific pod")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Successfully retrieved pod logs."),
-        @ApiResponse(responseCode = "404", description = "Pod or project not found.")
-    })
-    @GetMapping("/pods/logs/{project}/{pod}")
-    public List<String> getPodLogs(
-            @Parameter(description = "The name of the OpenShift project.") @PathVariable String project,
-            @Parameter(description = "The name of the pod.") @PathVariable String pod,
-            @Parameter(description = "The target cluster (e.g., 'gl', 'sl').") @RequestParam("cluster") String cluster) {
-        return deploymentService.getPodLogs(cluster, project, pod);
-    }
-}
+```
