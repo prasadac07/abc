@@ -1,35 +1,35 @@
-@Override
-@UseOpenShiftClient
-public InventoryResponse getInventoryForCluster(@ClusterIdentifier String cluster, String namespace) {
-    OpenShiftClient client = openshiftService.getActiveClient();
-
-    if (client == null) {
-        throw new RuntimeException("OpenShift client is null");
-    }
-
-    Project project = client.projects().withName(namespace).get();
-
-    if (project == null || project.getStatus() == null) {
-        // Project not found — return empty/default
-        return emptyInventoryResponse("Not Found");
-    }
-
-    String projectStatus = project.getStatus().getPhase();
-    Map<String, Integer> counts = fetchResourceCounts(client, namespace);
-
+private InventoryResponse emptyInventoryResponse(String status) {
     InventoryResponse response = new InventoryResponse();
-    response.setStatus(projectStatus);
-    response.setPods(counts.getOrDefault("pods", 0));
-    response.setServices(counts.getOrDefault("services", 0));
-    response.setRoutes(counts.getOrDefault("routes", 0));
-    response.setDeployments(counts.getOrDefault("deployments", 0));
-    response.setReplicasets(counts.getOrDefault("replicasets", 0));
-    response.setStatefulSets(counts.getOrDefault("statefulsets", 0));
-    response.setJobs(counts.getOrDefault("jobs", 0));
-    response.setCronJobs(counts.getOrDefault("cronjobs", 0));
-    response.setIngresses(counts.getOrDefault("ingresses", 0));
-    response.setPersistentvolumeClaims(counts.getOrDefault("persistentVolumeClaims", 0));
-    response.setConfigmaps(counts.getOrDefault("configmaps", 0));
-
+    response.setStatus(status);
+    response.setPods(0);
+    response.setServices(0);
+    response.setRoutes(0);
+    response.setDeployments(0);
+    response.setReplicasets(0);
+    response.setStatefulSets(0);
+    response.setJobs(0);
+    response.setCronJobs(0);
+    response.setIngresses(0);
+    response.setPersistentvolumeClaims(0);
+    response.setConfigmaps(0);
     return response;
+}
+@Override
+public Map<String, InventoryResponse> getProjectInventoryByName(String projectName) {
+    Map<String, InventoryResponse> result = new HashMap<>();
+
+    result.put("gl", safeGetInventory("gl", projectName));
+    result.put("s1", safeGetInventory("s1", projectName));
+
+    return result;
+}
+
+private InventoryResponse safeGetInventory(String cluster, String projectName) {
+    try {
+        return getInventoryForCluster(cluster, projectName);
+    } catch (Exception e) {
+        // Log if needed
+        System.err.println("Error in cluster " + cluster + " for project " + projectName + ": " + e.getMessage());
+        return emptyInventoryResponse("Error");
+    }
 }
