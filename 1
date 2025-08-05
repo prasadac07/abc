@@ -1,169 +1,33 @@
-package com.barclays.iportalmonitoring.service.impl;
+@Override
+public Map<String, InventoryResponse> getProjectInventoryByName(String projectName) {
+    Map<String, InventoryResponse> result = new HashMap<>();
 
-import com.barclays.iportalmonitoring.annotation.ClusterIdentifier;
-import com.barclays.iportalmonitoring.annotation.UseOpenShiftClient;
-import com.barclays.iportalmonitoring.model.HealthCheckResponse;
-import com.barclays.iportalmonitoring.service.HealthCheckService;
-import com.barclays.iportalmonitoring.service.OpenshiftService;
-import io.fabric8.kubernetes.api.model.Container;
-import io.fabric8.kubernetes.api.model.Pod;
-import io.fabric8.kubernetes.api.model.Probe;
-import io.fabric8.kubernetes.api.model.Service;
-import io.fabric8.kubernetes.api.model.apps.Deployment;
-import io.fabric8.openshift.api.model.Route;
-import io.fabric8.openshift.client.OpenShiftClient;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
+    result.put("gl", safeGetInventory("gl", projectName));
+    result.put("s1", safeGetInventory("s1", projectName));
 
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.Collectors;
+    return result;
+}
 
-@Service
-public class HealthCheckServiceImpl implements HealthCheckService {
-
-    private final OpenshiftService openshiftService;
-
-    @Autowired
-    public HealthCheckServiceImpl(OpenshiftService openshiftService) {
-        this.openshiftService = openshiftService;
-    }
-
-    @Override
-    @UseOpenShiftClient
-    public List<HealthCheckResponse> checkDeploymentHealth(@ClusterIdentifier String cluster, String project) {
-        OpenShiftClient client = openshiftService.getActiveClient();
-        if (client == null) {
-            throw new RuntimeException("Openshift client not available for cluster: " + cluster);
-        }
-
-        List<Deployment> deployments = client.apps().deployments().inNamespace(project).list().getItems();
-        List<Service> services = client.services().inNamespace(project).list().getItems();
-        List<Route> routes = client.routes().inNamespace(project).list().getItems();
-
-        Map<String, String> serviceToRouteUrlMap = routes.stream().collect(Collectors.toMap(
-                route -> route.getSpec().getTo().getName(),
-                route -> {
-                    String scheme = (route.getSpec().getTls() != null) ? "https" : "http";
-                    return scheme + "://" + route.getSpec().getHost();
-                },
-                (url1, url2) -> url1
-        ));
-
-        List<HealthCheckResponse> healthCheckResults = Collections.synchronizedList(new ArrayList<>());
-        ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-        List<Future<?>> futures = new ArrayList<>();
-
-        for (Deployment deployment : deployments) {
-            Map<String, String> podLabels = deployment.getSpec().getTemplate().getMetadata().getLabels();
-            if (podLabels == null || podLabels.isEmpty()) continue;
-
-            Optional<Service> matchingServiceOpt = services.stream()
-                    .filter(service -> isSelectorMatch(podLabels, service.getSpec().getSelector()))
-                    .findFirst();
-
-            String serviceName = matchingServiceOpt.map(s -> s.getMetadata().getName()).orElse("N/A");
-            String routeUrl = matchingServiceOpt.map(s -> serviceToRouteUrlMap.get(s.getMetadata().getName())).orElse("N/A");
-
-            List<Pod> deploymentPods = client.pods().inNamespace(project).withLabels(podLabels).list().getItems();
-            if (deploymentPods.isEmpty()) {
-                healthCheckResults.add(createNoPodsResponse(deployment, serviceName, routeUrl));
-                continue;
-            }
-
-            for (Pod pod : deploymentPods) {
-                futures.add(executor.submit(() -> processSinglePod(healthCheckResults, deployment, pod, routeUrl, serviceName)));
-            }
-        }
-
-        try {
-            for (Future<?> future : futures) future.get();
-        } catch (InterruptedException | ExecutionException e) {
-            e.printStackTrace();
-        } finally {
-            executor.shutdown();
-        }
-
-        return healthCheckResults;
-    }
-
-    private void processSinglePod(List<HealthCheckResponse> resultList, Deployment deployment, Pod pod, String routeUrl, String serviceName) {
-        String podName = pod.getMetadata().getName();
-        String podStatus = pod.getStatus().getPhase();
-
-        for (Container container : pod.getSpec().getContainers()) {
-            HealthCheckResponse response = new HealthCheckResponse();
-            response.setDeployment(deployment.getMetadata().getName());
-            response.setPodName(podName);
-            response.setContainer(container.getName());
-            response.setService(serviceName);
-            response.setRoute(routeUrl);
-
-            String livenessPath = getProbePath(container.getLivenessProbe());
-            String readinessPath = getProbePath(container.getReadinessProbe());
-            response.setLivenessPath(livenessPath);
-            response.setReadinessPath(readinessPath);
-
-            if ("Running".equals(podStatus)) {
-                if ("N/A".equals(routeUrl)) {
-                    response.setLivenessStatus("No Route Available");
-                    response.setReadinessStatus("No Route Available");
-                } else {
-                    response.setLivenessStatus(getHttpStatus(routeUrl, livenessPath));
-                    response.setReadinessStatus(getHttpStatus(routeUrl, readinessPath));
-                }
-            } else {
-                response.setLivenessStatus("Pod Status: " + podStatus);
-                response.setReadinessStatus("Pod Status: " + podStatus);
-            }
-
-            resultList.add(response);
-        }
-    }
-
-    private HealthCheckResponse createNoPodsResponse(Deployment deployment, String serviceName, String routeUrl) {
-        HealthCheckResponse response = new HealthCheckResponse();
-        response.setDeployment(deployment.getMetadata().getName());
-        response.setPodName("No Pod Found");
-        response.setContainer(deployment.getSpec().getTemplate().getSpec().getContainers().get(0).getName());
-        response.setService(serviceName);
-        response.setRoute(routeUrl);
-        response.setLivenessStatus("Scaled to Zero");
-        response.setReadinessStatus("Scaled to Zero");
-        return response;
-    }
-
-    private boolean isSelectorMatch(Map<String, String> podLabels, Map<String, String> serviceSelector) {
-        if (serviceSelector == null || serviceSelector.isEmpty()) return false;
-        return podLabels.entrySet().containsAll(serviceSelector.entrySet());
-    }
-
-    private String getProbePath(Probe probe) {
-        return Optional.ofNullable(probe)
-                .map(p -> p.getHttpGet() != null ? p.getHttpGet().getPath() : null)
-                .orElse(null);
-    }
-
-    private String getHttpStatus(String baseUrl, String path) {
-        if (path == null || "N/A".equals(path)) {
-            return "Probe Not Defined";
-        }
-        try {
-            String fullUrl = baseUrl + (path.startsWith("/") ? path : "/" + path);
-            URL url = new URL(fullUrl);
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            connection.setConnectTimeout(5000);
-            connection.setReadTimeout(5000);
-            connection.setRequestMethod("GET");
-            connection.setInstanceFollowRedirects(true);
-
-            int code = connection.getResponseCode();
-            String message = connection.getResponseMessage();
-            return code + " " + message;
-        } catch (Exception e) {
-            return e.getClass().getSimpleName();
-        }
+private InventoryResponse safeGetInventory(String cluster, String projectName) {
+    try {
+        return getInventoryForCluster(cluster, projectName);
+    } catch (Exception e) {
+        // Optionally log the error:
+        System.err.println("Project " + projectName + " not found in cluster: " + cluster);
+        // Return an empty InventoryResponse
+        InventoryResponse emptyResponse = new InventoryResponse();
+        emptyResponse.setStatus("Not Found");
+        emptyResponse.setPods(0);
+        emptyResponse.setServices(0);
+        emptyResponse.setRoutes(0);
+        emptyResponse.setDeployments(0);
+        emptyResponse.setReplicasets(0);
+        emptyResponse.setStatefulSets(0);
+        emptyResponse.setJobs(0);
+        emptyResponse.setCronJobs(0);
+        emptyResponse.setIngresses(0);
+        emptyResponse.setPersistentvolumeClaims(0);
+        emptyResponse.setConfigmaps(0);
+        return emptyResponse;
     }
 }
