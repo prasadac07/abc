@@ -1,33 +1,35 @@
 @Override
-public Map<String, InventoryResponse> getProjectInventoryByName(String projectName) {
-    Map<String, InventoryResponse> result = new HashMap<>();
+@UseOpenShiftClient
+public InventoryResponse getInventoryForCluster(@ClusterIdentifier String cluster, String namespace) {
+    OpenShiftClient client = openshiftService.getActiveClient();
 
-    result.put("gl", safeGetInventory("gl", projectName));
-    result.put("s1", safeGetInventory("s1", projectName));
-
-    return result;
-}
-
-private InventoryResponse safeGetInventory(String cluster, String projectName) {
-    try {
-        return getInventoryForCluster(cluster, projectName);
-    } catch (Exception e) {
-        // Optionally log the error:
-        System.err.println("Project " + projectName + " not found in cluster: " + cluster);
-        // Return an empty InventoryResponse
-        InventoryResponse emptyResponse = new InventoryResponse();
-        emptyResponse.setStatus("Not Found");
-        emptyResponse.setPods(0);
-        emptyResponse.setServices(0);
-        emptyResponse.setRoutes(0);
-        emptyResponse.setDeployments(0);
-        emptyResponse.setReplicasets(0);
-        emptyResponse.setStatefulSets(0);
-        emptyResponse.setJobs(0);
-        emptyResponse.setCronJobs(0);
-        emptyResponse.setIngresses(0);
-        emptyResponse.setPersistentvolumeClaims(0);
-        emptyResponse.setConfigmaps(0);
-        return emptyResponse;
+    if (client == null) {
+        throw new RuntimeException("OpenShift client is null");
     }
+
+    Project project = client.projects().withName(namespace).get();
+
+    if (project == null || project.getStatus() == null) {
+        // Project not found — return empty/default
+        return emptyInventoryResponse("Not Found");
+    }
+
+    String projectStatus = project.getStatus().getPhase();
+    Map<String, Integer> counts = fetchResourceCounts(client, namespace);
+
+    InventoryResponse response = new InventoryResponse();
+    response.setStatus(projectStatus);
+    response.setPods(counts.getOrDefault("pods", 0));
+    response.setServices(counts.getOrDefault("services", 0));
+    response.setRoutes(counts.getOrDefault("routes", 0));
+    response.setDeployments(counts.getOrDefault("deployments", 0));
+    response.setReplicasets(counts.getOrDefault("replicasets", 0));
+    response.setStatefulSets(counts.getOrDefault("statefulsets", 0));
+    response.setJobs(counts.getOrDefault("jobs", 0));
+    response.setCronJobs(counts.getOrDefault("cronjobs", 0));
+    response.setIngresses(counts.getOrDefault("ingresses", 0));
+    response.setPersistentvolumeClaims(counts.getOrDefault("persistentVolumeClaims", 0));
+    response.setConfigmaps(counts.getOrDefault("configmaps", 0));
+
+    return response;
 }
