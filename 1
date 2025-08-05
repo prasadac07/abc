@@ -4,7 +4,7 @@ import com.barclays.iportalmonitoring.annotation.ClusterIdentifier;
 import com.barclays.iportalmonitoring.annotation.UseOpenShiftClient;
 import com.barclays.iportalmonitoring.model.HealthCheckResponse;
 import com.barclays.iportalmonitoring.service.HealthCheckService;
-import com.barclays.iportalmonitoring.service.OpenShiftService;
+import com.barclays.iportalmonitoring.service.OpenshiftService;
 import io.fabric8.kubernetes.api.model.Container;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.Probe;
@@ -15,11 +15,8 @@ import io.fabric8.openshift.client.OpenShiftClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
@@ -27,18 +24,17 @@ import java.util.stream.Collectors;
 @Service
 public class HealthCheckServiceImpl implements HealthCheckService {
 
-    private final OpenShiftService openShiftService;
+    private final OpenshiftService openshiftService;
 
     @Autowired
-    public HealthCheckServiceImpl(OpenShiftService openShiftService) {
-        this.openShiftService = openShiftService;
+    public HealthCheckServiceImpl(OpenshiftService openshiftService) {
+        this.openshiftService = openshiftService;
     }
 
     @Override
     @UseOpenShiftClient
     public List<HealthCheckResponse> checkDeploymentHealth(@ClusterIdentifier String cluster, String project) {
-        OpenShiftClient client = openShiftService.getActiveClient();
-
+        OpenShiftClient client = openshiftService.getActiveClient();
         if (client == null) {
             throw new RuntimeException("Openshift client not available for cluster: " + cluster);
         }
@@ -47,18 +43,18 @@ public class HealthCheckServiceImpl implements HealthCheckService {
         List<Service> services = client.services().inNamespace(project).list().getItems();
         List<Route> routes = client.routes().inNamespace(project).list().getItems();
 
-        Map<String, String> serviceToRouteMap = routes.stream().collect(Collectors.toMap(
+        Map<String, String> serviceToRouteUrlMap = routes.stream().collect(Collectors.toMap(
                 route -> route.getSpec().getTo().getName(),
                 route -> {
-                    String scheme = route.getSpec().getTls() != null ? "https" : "http";
+                    String scheme = (route.getSpec().getTls() != null) ? "https" : "http";
                     return scheme + "://" + route.getSpec().getHost();
                 },
                 (url1, url2) -> url1
         ));
 
-        List<HealthCheckResponse> healthCheckResults = new ArrayList<>();
+        List<HealthCheckResponse> healthCheckResults = Collections.synchronizedList(new ArrayList<>());
         ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-        List<Future<HealthCheckResponse>> futures = new ArrayList<>();
+        List<Future<?>> futures = new ArrayList<>();
 
         for (Deployment deployment : deployments) {
             Map<String, String> podLabels = deployment.getSpec().getTemplate().getMetadata().getLabels();
@@ -69,58 +65,62 @@ public class HealthCheckServiceImpl implements HealthCheckService {
                     .findFirst();
 
             String serviceName = matchingServiceOpt.map(s -> s.getMetadata().getName()).orElse("N/A");
-            String routeUrl = matchingServiceOpt.map(s -> serviceToRouteMap.get(s.getMetadata().getName())).orElse("N/A");
-            List<Pod> deploymentPods = client.pods().inNamespace(project).withLabels(podLabels).list().getItems();
+            String routeUrl = matchingServiceOpt.map(s -> serviceToRouteUrlMap.get(s.getMetadata().getName())).orElse("N/A");
 
+            List<Pod> deploymentPods = client.pods().inNamespace(project).withLabels(podLabels).list().getItems();
             if (deploymentPods.isEmpty()) {
                 healthCheckResults.add(createNoPodsResponse(deployment, serviceName, routeUrl));
                 continue;
             }
 
             for (Pod pod : deploymentPods) {
-                for (Container container : pod.getSpec().getContainers()) {
-                    futures.add(executor.submit(() -> processSinglePod(deployment, pod, container, routeUrl, serviceName)));
-                }
+                futures.add(executor.submit(() -> processSinglePod(healthCheckResults, deployment, pod, routeUrl, serviceName)));
             }
         }
 
-        for (Future<HealthCheckResponse> future : futures) {
-            try {
-                healthCheckResults.add(future.get());
-            } catch (InterruptedException | ExecutionException e) {
-                e.printStackTrace();
-            }
+        try {
+            for (Future<?> future : futures) future.get();
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
+        } finally {
+            executor.shutdown();
         }
 
-        executor.shutdown();
         return healthCheckResults;
     }
 
-    private HealthCheckResponse processSinglePod(Deployment deployment, Pod pod, Container container, String routeUrl, String serviceName) {
-        HealthCheckResponse response = new HealthCheckResponse();
+    private void processSinglePod(List<HealthCheckResponse> resultList, Deployment deployment, Pod pod, String routeUrl, String serviceName) {
+        String podName = pod.getMetadata().getName();
         String podStatus = pod.getStatus().getPhase();
 
-        response.setDeployment(deployment.getMetadata().getName());
-        response.setPodName(pod.getMetadata().getName());
-        response.setContainer(container.getName());
-        response.setService(serviceName);
-        response.setRoute(routeUrl);
+        for (Container container : pod.getSpec().getContainers()) {
+            HealthCheckResponse response = new HealthCheckResponse();
+            response.setDeployment(deployment.getMetadata().getName());
+            response.setPodName(podName);
+            response.setContainer(container.getName());
+            response.setService(serviceName);
+            response.setRoute(routeUrl);
 
-        String livenessPath = getProbePath(container.getLivenessProbe());
-        String readinessPath = getProbePath(container.getReadinessProbe());
+            String livenessPath = getProbePath(container.getLivenessProbe());
+            String readinessPath = getProbePath(container.getReadinessProbe());
+            response.setLivenessPath(livenessPath);
+            response.setReadinessPath(readinessPath);
 
-        response.setLivenessPath(livenessPath);
-        response.setReadinessPath(readinessPath);
+            if ("Running".equals(podStatus)) {
+                if ("N/A".equals(routeUrl)) {
+                    response.setLivenessStatus("No Route Available");
+                    response.setReadinessStatus("No Route Available");
+                } else {
+                    response.setLivenessStatus(getHttpStatus(routeUrl, livenessPath));
+                    response.setReadinessStatus(getHttpStatus(routeUrl, readinessPath));
+                }
+            } else {
+                response.setLivenessStatus("Pod Status: " + podStatus);
+                response.setReadinessStatus("Pod Status: " + podStatus);
+            }
 
-        if ("Running".equalsIgnoreCase(podStatus) && !"N/A".equals(routeUrl)) {
-            response.setLivenessStatus(getHttpStatus(routeUrl, livenessPath));
-            response.setReadinessStatus(getHttpStatus(routeUrl, readinessPath));
-        } else {
-            response.setLivenessStatus("Pod Status: " + podStatus);
-            response.setReadinessStatus("Pod Status: " + podStatus);
+            resultList.add(response);
         }
-
-        return response;
     }
 
     private HealthCheckResponse createNoPodsResponse(Deployment deployment, String serviceName, String routeUrl) {
@@ -147,20 +147,23 @@ public class HealthCheckServiceImpl implements HealthCheckService {
     }
 
     private String getHttpStatus(String baseUrl, String path) {
-        if (path == null || "N/A".equals(path)) return "Probe Not Defined";
-
+        if (path == null || "N/A".equals(path)) {
+            return "Probe Not Defined";
+        }
         try {
             String fullUrl = baseUrl + (path.startsWith("/") ? path : "/" + path);
-            HttpClient client = HttpClient.newHttpClient();
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(fullUrl))
-                    .timeout(Duration.ofSeconds(10))
-                    .GET()
-                    .build();
-            HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
-            return String.valueOf(response.statusCode());
+            URL url = new URL(fullUrl);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(5000);
+            connection.setRequestMethod("GET");
+            connection.setInstanceFollowRedirects(true);
+
+            int code = connection.getResponseCode();
+            String message = connection.getResponseMessage();
+            return code + " " + message;
         } catch (Exception e) {
-            return e.getClass().getSimpleName() + ": " + e.getMessage();
+            return e.getClass().getSimpleName();
         }
     }
 }
