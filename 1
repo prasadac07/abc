@@ -1,35 +1,389 @@
-private InventoryResponse emptyInventoryResponse(String status) {
-    InventoryResponse response = new InventoryResponse();
-    response.setStatus(status);
-    response.setPods(0);
-    response.setServices(0);
-    response.setRoutes(0);
-    response.setDeployments(0);
-    response.setReplicasets(0);
-    response.setStatefulSets(0);
-    response.setJobs(0);
-    response.setCronJobs(0);
-    response.setIngresses(0);
-    response.setPersistentvolumeClaims(0);
-    response.setConfigmaps(0);
-    return response;
-}
-@Override
-public Map<String, InventoryResponse> getProjectInventoryByName(String projectName) {
-    Map<String, InventoryResponse> result = new HashMap<>();
 
-    result.put("gl", safeGetInventory("gl", projectName));
-    result.put("s1", safeGetInventory("s1", projectName));
+# iPortal Monitoring API
 
-    return result;
-}
+This is a robust, industry-level RESTful API to monitor OpenShift clusters, projects, deployments, services, routes, and more. It supports real-time event streaming and multi-cluster comparisons.
 
-private InventoryResponse safeGetInventory(String cluster, String projectName) {
-    try {
-        return getInventoryForCluster(cluster, projectName);
-    } catch (Exception e) {
-        // Log if needed
-        System.err.println("Error in cluster " + cluster + " for project " + projectName + ": " + e.getMessage());
-        return emptyInventoryResponse("Error");
-    }
+---
+
+## Base URL
+
+```
+
+http://localhost:8000/api/iportal
+
+````
+
+---
+
+## Projects API
+
+### Get All Projects
+
+**GET** `/projects`
+
+Returns project names from a specified cluster or both.
+
+#### Query Parameters
+
+| Name     | Type   | Default | Description                          |
+|----------|--------|---------|--------------------------------------|
+| cluster  | string | both    | Cluster name: `gl`, `sl`, or `both` |
+
+---
+
+### Get Project Inventory
+
+**GET** `/projects/inventory/{project}`
+
+Returns resource counts (pods, services, etc.) in a project.
+
+#### Path Parameter
+
+- `project` (string): OpenShift project ID
+
+#### Query Parameter
+
+- `cluster` (string, default: `both`): `gl`, `sl`, or `both`
+
+---
+
+### Stream Project Events
+
+**GET** `/projects/events/{project}`
+
+Streams real-time OpenShift events using Server-Sent Events (SSE).
+
+#### Path Parameter
+
+- `project` (string): Project to stream
+
+#### Query Parameter
+
+- `cluster` (string): `gl` or `sl`
+
+---
+
+## ResourceQuotas API
+
+### Compare Resource Quotas
+
+**GET** `/resource-quotas/{project}`
+
+Compare resource quotas across clusters.
+
+#### Path Parameter
+
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string, default: `both`)
+
+---
+
+## ConfigMaps API
+
+### Compare ConfigMaps
+
+**GET** `/configmaps/{project}`
+
+Compare all ConfigMaps across clusters for a project.
+
+#### Path Parameter
+
+- `project` (string)
+
+---
+
+## Services API
+
+### Get Services in a Project
+
+**GET** `/services/{project}`
+
+Retrieves detailed service data.
+
+#### Path Parameter
+
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string, default: `both`)
+
+---
+
+### Get Pods by Service
+
+**GET** `/services/pods/{serviceName}/{project}`
+
+Returns pods managed by a specific service.
+
+#### Path Parameters
+
+- `serviceName` (string)
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string)
+
+---
+
+## HealthCheck API
+
+### Health Check for Deployments
+
+**GET** `/healthcheck/{project}`
+
+Performs health checks on all deployments in the project.
+
+#### Path Parameter
+
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string)
+
+---
+
+## Routes API
+
+### Get Route Details
+
+**GET** `/routes/{project}`
+
+Returns all route data in a project.
+
+#### Path Parameter
+
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string, default: `both`)
+
+---
+
+## Deployments API
+
+### Get Deployment Names
+
+**GET** `/deployments/{project}`
+
+Lists all deployment names in the project.
+
+#### Path Parameter
+
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string)
+
+---
+
+### Get Pods by Deployment
+
+**GET** `/deployments/pods/{deploymentName}/{project}`
+
+Returns pod details under a specific deployment.
+
+#### Path Parameters
+
+- `deploymentName` (string)
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string)
+
+---
+
+### Get Logs for Pod
+
+**GET** `/deployments/pods/logs/{project}/{pod}`
+
+Returns logs for a specific pod.
+
+#### Path Parameters
+
+- `project` (string)
+- `pod` (string)
+
+#### Query Parameter
+
+- `cluster` (string)
+
+---
+
+### Get Deployment Data
+
+**GET** `/deployments/data/{project}`
+
+Returns detailed deployment data for a project.
+
+#### Path Parameter
+
+- `project` (string)
+
+#### Query Parameter
+
+- `cluster` (string, default: `both`)
+
+---
+
+## Authentication API
+
+### Login
+
+**POST** `/auth/login`
+
+Authenticates the user and generates session tokens for both `gl` and `sl` clusters.
+
+#### Request Body
+
+```json
+{
+  "username": "user1",
+  "password": "password123",
+  "environment": "dev"
 }
+````
+
+#### Success Response – 200 OK
+
+```json
+{
+  "message": "Login successful. Session created."
+}
+```
+
+#### Error Response – 401 Unauthorized
+
+```json
+{
+  "message": "Login failed: <error message>"
+}
+```
+
+---
+
+### Get Session Data
+
+**GET** `/auth/session?cluster=gl_token`
+
+Retrieves token and session details for the given cluster.
+
+#### Query Parameters
+
+| Name    | Type   | Required | Description                           |
+| ------- | ------ | -------- | ------------------------------------- |
+| cluster | string | Yes      | Cluster key: `gl_token` or `si_token` |
+
+#### Success Response – 200 OK
+
+```json
+{
+  "username": "user1",
+  "environment": "dev",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI..."
+}
+```
+
+#### Error Response – 401 Unauthorized
+
+```json
+{
+  "username": null,
+  "environment": null,
+  "token": null
+}
+```
+
+---
+
+### Logout
+
+**POST** `/auth/logout`
+
+Destroys the current session.
+
+#### Success Response – 200 OK
+
+```json
+{
+  "message": "Logout successful."
+}
+```
+
+---
+
+## Environment API
+
+### Get All Environments by Team
+
+**GET** `/teams`
+
+Returns a map of team names to their respective environments.
+
+#### Response
+
+```json
+{
+  "devops": ["dev", "qa", "prod"],
+  "infra": ["uat", "prod"]
+}
+```
+
+---
+
+### Get All Team Names
+
+**GET** `/teams/names`
+
+Returns a list of all available team names.
+
+#### Response
+
+```json
+[
+  "devops",
+  "infra"
+]
+```
+
+---
+
+### Get Environments for Specific Team
+
+**GET** `/teams/{team}`
+
+Returns environments configured under a specific team.
+
+#### Path Parameter
+
+| Name | Type   | Required | Description              |
+| ---- | ------ | -------- | ------------------------ |
+| team | string | Yes      | Team name (e.g., devops) |
+
+#### Response
+
+```json
+[
+  "dev",
+  "qa",
+  "prod"
+]
+```
+
+---
+
+## Contact
+
+For queries, feedback, or contributions, contact the maintainers at:
+
+```
+your-email@example.com
+```
