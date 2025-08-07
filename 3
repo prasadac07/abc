@@ -1,0 +1,355 @@
+Yes, absolutely! Using an index or table of contents (TOC) at the top of the API documentation is a widely accepted industry standard — especially for Confluence or internal wikis. It greatly improves readability and navigation, especially in long docs like yours.
+
+Here’s how we’ll improve your Markdown:
+
+
+---
+
+✅ Changes Implemented:
+
+1. Added a numbered Table of Contents
+
+
+2. Used hierarchical numbering for sections (e.g., 1.0, 1.1, 1.2)
+
+
+3. Grouped by base URLs
+
+
+4. Formatted uniformly with clean spacing and indentation
+
+
+
+
+---
+
+✅ Final Markdown Code (Confluence-Ready)
+
+# iPortal API Documentation
+
+This documentation outlines the available APIs for monitoring OpenShift clusters, authentication, and environment management.
+
+---
+
+## Table of Contents
+
+1.0 [Base URLs](#10-base-urls)  
+2.0 [Monitoring APIs](#20-monitoring-apis)  
+ 2.1 [Projects API](#21-projects-api)  
+ 2.2 [Resource Quotas API](#22-resource-quotas-api)  
+ 2.3 [ConfigMaps API](#23-configmaps-api)  
+ 2.4 [Services API](#24-services-api)  
+ 2.5 [Health Check API](#25-health-check-api)  
+ 2.6 [Routes API](#26-routes-api)  
+ 2.7 [Deployments API](#27-deployments-api)  
+3.0 [Authentication API](#30-authentication-api)  
+4.0 [Environment API](#40-environment-api)  
+5.0 [Contact](#50-contact)
+
+---
+
+## 1.0 Base URLs
+
+- Monitoring APIs:  
+  `http://localhost:8000/api/iportal`
+
+- Authentication & Environment APIs:  
+  `http://localhost:8000/api`
+
+---
+
+## 2.0 Monitoring APIs
+
+**Base URL:** `http://localhost:8000/api/iportal`
+
+---
+
+### 2.1 Projects API
+
+#### 2.1.1 Get All Projects
+
+**GET** `/projects`  
+Returns all project names from the specified cluster.
+
+**Query:** `cluster` (optional) = `gl`, `sl`, or `both` (default)
+
+---
+
+#### 2.1.2 Get Project Inventory
+
+**GET** `/projects/inventory/{project}`  
+Returns resource counts for the specified project.
+
+**Path:** `project`  
+**Query:** `cluster` (optional) = `gl`, `sl`, or `both` (default)
+
+---
+
+#### 2.1.3 Stream Project Events
+
+**GET** `/projects/events/{project}`  
+Streams real-time OpenShift events.
+
+**Path:** `project`  
+**Query:** `cluster` (required) = `gl` or `sl`
+
+---
+
+### 2.2 Resource Quotas API
+
+#### 2.2.1 Compare Resource Quotas
+
+**GET** `/resource-quotas/{project}`  
+Compares quotas across clusters.
+
+**Path:** `project`  
+**Query:** `cluster` (optional) = `gl`, `sl`, or `both` (default)
+
+---
+
+### 2.3 ConfigMaps API
+
+#### 2.3.1 Compare ConfigMaps
+
+**GET** `/configmaps/{project}`  
+Compares ConfigMaps across clusters.
+
+**Path:** `project`
+
+---
+
+### 2.4 Services API
+
+#### 2.4.1 Get Services in a Project
+
+**GET** `/services/{project}`  
+Returns services in the project.
+
+**Path:** `project`  
+**Query:** `cluster` (optional) = `gl`, `sl`, or `both` (default)
+
+---
+
+#### 2.4.2 Get Pods by Service
+
+**GET** `/services/pods/{serviceName}/{project}`  
+Returns pods under a service.
+
+**Path:** `serviceName`, `project`  
+**Query:** `cluster` (required)
+
+---
+
+### 2.5 Health Check API
+
+#### 2.5.1 Health Check for Deployments
+
+**GET** `/healthcheck/{project}`  
+Performs health checks on deployments.
+
+**Path:** `project`  
+**Query:** `cluster` (required)
+
+---
+
+### 2.6 Routes API
+
+#### 2.6.1 Get Route Details
+
+**GET** `/routes/{project}`  
+Returns route data.
+
+**Path:** `project`  
+**Query:** `cluster` (optional) = `gl`, `sl`, or `both` (default)
+
+---
+
+### 2.7 Deployments API
+
+#### 2.7.1 Get Deployment Names
+
+**GET** `/deployments/{project}`  
+Lists deployment names.
+
+**Path:** `project`  
+**Query:** `cluster` (required)
+
+---
+
+#### 2.7.2 Get Pods by Deployment
+
+**GET** `/deployments/pods/{deploymentName}/{project}`  
+Returns pods in a deployment.
+
+**Path:** `deploymentName`, `project`  
+**Query:** `cluster` (required)
+
+---
+
+#### 2.7.3 Get Logs for Pod
+
+**GET** `/deployments/pods/logs/{project}/{pod}`  
+Returns logs of a pod.
+
+**Path:** `project`, `pod`  
+**Query:** `cluster` (required)
+
+---
+
+#### 2.7.4 Get Deployment Data
+
+**GET** `/deployments/data/{project}`  
+Returns detailed deployment data.
+
+**Path:** `project`  
+**Query:** `cluster` (optional) = `gl`, `sl`, or `both` (default)
+
+---
+
+## 3.0 Authentication API
+
+**Base URL:** `http://localhost:8000/api`
+
+---
+
+### 3.1 Login
+
+**POST** `/auth/login`  
+Authenticates user and creates sessions.
+
+**Request Body:**
+```json
+{
+  "username": "user1",
+  "password": "password123",
+  "environment": "dev"
+}
+
+Success:
+
+{
+  "message": "Login successful. Session created."
+}
+
+Failure:
+
+{
+  "message": "Login failed: <error message>"
+}
+
+
+---
+
+3.2 Get Session Data
+
+GET /auth/session?cluster=gl_token
+Retrieves token for the specified cluster.
+
+Query: cluster (required) = gl_token or si_token
+
+Success:
+
+{
+  "username": "user1",
+  "environment": "dev",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI..."
+}
+
+Failure:
+
+{
+  "username": null,
+  "environment": null,
+  "token": null
+}
+
+
+---
+
+3.3 Logout
+
+POST /auth/logout
+Ends user session.
+
+Success:
+
+{
+  "message": "Logout successful."
+}
+
+
+---
+
+4.0 Environment API
+
+Base URL: http://localhost:8000/api
+
+
+---
+
+4.1 Get All Environments by Team
+
+GET /teams
+Returns environments mapped by team.
+
+Example Response:
+
+{
+  "devops": ["dev", "qa", "prod"],
+  "infra": ["uat", "prod"]
+}
+
+
+---
+
+4.2 Get All Team Names
+
+GET /teams/names
+Returns all team names.
+
+Example Response:
+
+[
+  "devops",
+  "infra"
+]
+
+
+---
+
+4.3 Get Environments for a Specific Team
+
+GET /teams/{team}
+Returns environments under a specific team.
+
+Path: team
+
+Example Response:
+
+[
+  "dev",
+  "qa",
+  "prod"
+]
+
+
+---
+
+5.0 Contact
+
+For any queries or contributions, contact:
+
+your-email@example.com
+
+---
+
+### ✅ Next Steps?
+
+Let me know if you'd like:
+- A downloadable version (e.g., `.md` file or PDF)
+- This formatted for **Confluence page structure**
+- Swagger/OpenAPI integration
+- Auto-generated code snippets (e.g., cURL, Python requests, Postman)
+
+Let’s make this clean and developer-friendly for your entire team.
+
