@@ -1,0 +1,359 @@
+Here's your improved formal API documentation in Markdown, following best practices for Confluence-style readability:
+
+No logos/emojis
+
+No tables
+
+Clean, consistent sections
+
+Easy to distinguish between APIs using clear section breaks
+
+
+
+---
+
+# iPortal Monitoring API
+
+The iPortal Monitoring API is a robust, industry-grade RESTful service that monitors OpenShift clusters and provides deep visibility into projects, deployments, services, routes, and more. It supports real-time event streaming and multi-cluster comparisons.
+
+---
+
+## Base URL
+
+http://localhost:8000/api/iportal
+
+---
+
+## Projects API
+
+### 1. Get All Projects
+
+**Method:** GET  
+**Endpoint:** `/projects`  
+**Description:** Returns all project names from the specified cluster.
+
+**Query Parameters:**
+- `cluster` (optional): Use `gl`, `sl`, or `both`. Defaults to `both`.
+
+---
+
+### 2. Get Project Inventory
+
+**Method:** GET  
+**Endpoint:** `/projects/inventory/{project}`  
+**Description:** Retrieves resource counts (e.g., pods, services) within the given project.
+
+**Path Parameters:**
+- `project`: The OpenShift project name.
+
+**Query Parameters:**
+- `cluster` (optional): Use `gl`, `sl`, or `both`. Defaults to `both`.
+
+---
+
+### 3. Stream Project Events
+
+**Method:** GET  
+**Endpoint:** `/projects/events/{project}`  
+**Description:** Streams real-time OpenShift events using Server-Sent Events (SSE).
+
+**Path Parameters:**
+- `project`: The OpenShift project to stream events from.
+
+**Query Parameters:**
+- `cluster` (required): Use `gl` or `sl`.
+
+---
+
+## Resource Quotas API
+
+### Compare Resource Quotas
+
+**Method:** GET  
+**Endpoint:** `/resource-quotas/{project}`  
+**Description:** Compares resource quotas for a specific project across clusters.
+
+**Path Parameters:**
+- `project`: The OpenShift project name.
+
+**Query Parameters:**
+- `cluster` (optional): Use `gl`, `sl`, or `both`. Defaults to `both`.
+
+---
+
+## ConfigMaps API
+
+### Compare ConfigMaps
+
+**Method:** GET  
+**Endpoint:** `/configmaps/{project}`  
+**Description:** Compares all ConfigMaps across clusters for the specified project.
+
+**Path Parameters:**
+- `project`: The OpenShift project name.
+
+---
+
+## Services API
+
+### 1. Get Services in a Project
+
+**Method:** GET  
+**Endpoint:** `/services/{project}`  
+**Description:** Retrieves detailed service information for the specified project.
+
+**Path Parameters:**
+- `project`: The OpenShift project name.
+
+**Query Parameters:**
+- `cluster` (optional): Use `gl`, `sl`, or `both`. Defaults to `both`.
+
+---
+
+### 2. Get Pods by Service
+
+**Method:** GET  
+**Endpoint:** `/services/pods/{serviceName}/{project}`  
+**Description:** Returns pods managed by the specified service.
+
+**Path Parameters:**
+- `serviceName`: Name of the service.
+- `project`: Name of the project.
+
+**Query Parameters:**
+- `cluster` (required): Use `gl` or `sl`.
+
+---
+
+## Health Check API
+
+### Health Check for Deployments
+
+**Method:** GET  
+**Endpoint:** `/healthcheck/{project}`  
+**Description:** Performs health checks on all deployments in the specified project.
+
+**Path Parameters:**
+- `project`: The OpenShift project name.
+
+**Query Parameters:**
+- `cluster` (required): Use `gl` or `sl`.
+
+---
+
+## Routes API
+
+### Get Route Details
+
+**Method:** GET  
+**Endpoint:** `/routes/{project}`  
+**Description:** Returns all route data for the specified project.
+
+**Path Parameters:**
+- `project`: The OpenShift project name.
+
+**Query Parameters:**
+- `cluster` (optional): Use `gl`, `sl`, or `both`. Defaults to `both`.
+
+---
+
+## Deployments API
+
+### 1. Get Deployment Names
+
+**Method:** GET  
+**Endpoint:** `/deployments/{project}`  
+**Description:** Lists all deployment names in the specified project.
+
+**Path Parameters:**
+- `project`: The OpenShift project name.
+
+**Query Parameters:**
+- `cluster` (required): Use `gl` or `sl`.
+
+---
+
+### 2. Get Pods by Deployment
+
+**Method:** GET  
+**Endpoint:** `/deployments/pods/{deploymentName}/{project}`  
+**Description:** Returns pods under the specified deployment.
+
+**Path Parameters:**
+- `deploymentName`: Name of the deployment.
+- `project`: Name of the project.
+
+**Query Parameters:**
+- `cluster` (required): Use `gl` or `sl`.
+
+---
+
+### 3. Get Logs for Pod
+
+**Method:** GET  
+**Endpoint:** `/deployments/pods/logs/{project}/{pod}`  
+**Description:** Retrieves logs for the specified pod.
+
+**Path Parameters:**
+- `project`: Name of the project.
+- `pod`: Name of the pod.
+
+**Query Parameters:**
+- `cluster` (required): Use `gl` or `sl`.
+
+---
+
+### 4. Get Deployment Data
+
+**Method:** GET  
+**Endpoint:** `/deployments/data/{project}`  
+**Description:** Returns detailed deployment data for a project.
+
+**Path Parameters:**
+- `project`: Name of the project.
+
+**Query Parameters:**
+- `cluster` (optional): Use `gl`, `sl`, or `both`. Defaults to `both`.
+
+---
+
+## Authentication API
+
+### 1. Login
+
+**Method:** POST  
+**Endpoint:** `/auth/login`  
+**Description:** Authenticates a user and creates sessions for `gl` and `sl` clusters.
+
+**Request Body Example:**
+```json
+{
+  "username": "user1",
+  "password": "password123",
+  "environment": "dev"
+}
+
+Success Response:
+
+{
+  "message": "Login successful. Session created."
+}
+
+Error Response:
+
+{
+  "message": "Login failed: <error message>"
+}
+
+
+---
+
+2. Get Session Data
+
+Method: GET
+Endpoint: /auth/session?cluster=gl_token
+Description: Retrieves session token details for the specified cluster.
+
+Query Parameters:
+
+cluster: Required. Use gl_token or si_token.
+
+
+Success Response:
+
+{
+  "username": "user1",
+  "environment": "dev",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI..."
+}
+
+Error Response:
+
+{
+  "username": null,
+  "environment": null,
+  "token": null
+}
+
+
+---
+
+3. Logout
+
+Method: POST
+Endpoint: /auth/logout
+Description: Logs the user out and terminates the session.
+
+Success Response:
+
+{
+  "message": "Logout successful."
+}
+
+
+---
+
+Environment API
+
+1. Get All Environments by Team
+
+Method: GET
+Endpoint: /teams
+Description: Returns a map of team names to their environments.
+
+Response Example:
+
+{
+  "devops": ["dev", "qa", "prod"],
+  "infra": ["uat", "prod"]
+}
+
+
+---
+
+2. Get All Team Names
+
+Method: GET
+Endpoint: /teams/names
+Description: Retrieves a list of all team names.
+
+Response Example:
+
+[
+  "devops",
+  "infra"
+]
+
+
+---
+
+3. Get Environments for a Specific Team
+
+Method: GET
+Endpoint: /teams/{team}
+Description: Retrieves all environments under a specified team.
+
+Path Parameters:
+
+team: Name of the team (e.g., devops).
+
+
+Response Example:
+
+[
+  "dev",
+  "qa",
+  "prod"
+]
+
+
+---
+
+Contact
+
+For questions, issues, or suggestions, contact the maintainers at:
+
+your-email@example.com
+
+Let me know if you’d like to convert this to Confluence format (like storage format XML or rich text macros), or if you want to auto-generate this from code (e.g., using Swagger/OpenAPI).
+
